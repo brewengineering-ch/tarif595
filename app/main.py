@@ -136,7 +136,7 @@ INDEX_HTML = """<!DOCTYPE html>
           link.href = URL.createObjectURL(blob);
           link.download = form.dataset.filename;
           link.click();
-          URL.revokeObjectURL(link.href);
+          setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         });
       });
     </script>

@@ -36,6 +36,15 @@ def _text_block(pdf: canvas.Canvas, x: float, y: float, title: str, lines: Itera
     return current_y
 
 
+def _wrap_preview_lines(value: str, width: int, max_lines: int) -> list[str]:
+    wrapped: list[str] = []
+    for raw_line in value.splitlines() or [""]:
+        wrapped.extend(raw_line[index : index + width] for index in range(0, len(raw_line), width) or [0])
+        if len(wrapped) >= max_lines:
+            return wrapped[:max_lines]
+    return wrapped[:max_lines]
+
+
 def build_swiss_qr_payload(request: QrBillRequest) -> str:
     creditor = request.creditor
     debtor = request.debtor
@@ -169,8 +178,8 @@ def create_xml_attachment_pdf(request: XmlAttachmentRequest) -> bytes:
     pdf.setFont("Helvetica", 8)
     preview = request.xml_content[:1200]
     text = pdf.beginText(100 * mm, height - 52 * mm)
-    for raw_line in preview.splitlines()[:35]:
-        text.textLine(raw_line[:55])
+    for raw_line in _wrap_preview_lines(preview, width=55, max_lines=35):
+        text.textLine(raw_line)
     if len(request.xml_content) > len(preview):
         text.textLine("...")
     pdf.drawText(text)
