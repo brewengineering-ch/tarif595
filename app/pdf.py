@@ -93,6 +93,7 @@ def _wrap_preview_lines(value: str, width: int, max_lines: int) -> list[str]:
 def build_swiss_qr_payload(request: QrBillRequest) -> str:
     creditor = request.creditor
     debtor = request.debtor
+    amount = f"{request.amount:.2f}" if request.amount is not None else ""
     if not request.reference:
         reference_type = "NON"
     elif is_qr_iban(request.account):
@@ -112,7 +113,7 @@ def build_swiss_qr_payload(request: QrBillRequest) -> str:
             "",
             "",
             "",
-            f"{request.amount:.2f}",
+            amount,
             request.currency,
             *_address_fields(debtor),
             reference_type,
@@ -139,8 +140,9 @@ def create_qr_bill_pdf(request: QrBillRequest) -> bytes:
     _text_block(pdf, 20 * mm, height - 45 * mm, "Creditor", _party_lines(request.creditor))
     _text_block(pdf, 110 * mm, height - 45 * mm, "Debtor", _party_lines(request.debtor))
 
+    amount_label = f"{request.amount:.2f} {request.currency}" if request.amount is not None else f"Open amount ({request.currency})"
     pdf.setFont("Helvetica-Bold", 12)
-    pdf.drawString(20 * mm, height - 90 * mm, f"Amount: {request.amount:.2f} {request.currency}")
+    pdf.drawString(20 * mm, height - 90 * mm, f"Amount: {amount_label}")
     pdf.setFont("Helvetica", 10)
     pdf.drawString(20 * mm, height - 98 * mm, f"Account: {request.account}")
     pdf.drawString(20 * mm, height - 106 * mm, f"Reference: {request.reference or '-'}")

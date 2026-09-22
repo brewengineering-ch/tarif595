@@ -1,3 +1,6 @@
+import re
+from urllib.parse import quote
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response
 
@@ -167,10 +170,17 @@ INDEX_HTML = """<!DOCTYPE html>
 
 
 def pdf_response(content: bytes, filename: str) -> Response:
+    safe_filename = re.sub(r'[^A-Za-z0-9._-]+', "_", filename).strip("._") or "document.pdf"
+    encoded_filename = quote(filename, safe="")
     return Response(
         content=content,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{safe_filename}"; '
+                f"filename*=UTF-8''{encoded_filename}"
+            )
+        },
     )
 
 
@@ -196,4 +206,5 @@ async def reimbursement_slip(request: ReimbursementSlipRequest) -> Response:
 
 @app.post("/api/xml-attachment")
 async def xml_attachment(request: XmlAttachmentRequest) -> Response:
-    return pdf_response(create_xml_attachment_pdf(request), "xml-attachment.pdf")
+    stem = request.filename.rsplit(".", 1)[0] if "." in request.filename else request.filename
+    return pdf_response(create_xml_attachment_pdf(request), f"{stem}.pdf")

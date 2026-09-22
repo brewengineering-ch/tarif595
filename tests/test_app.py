@@ -99,6 +99,39 @@ def test_qr_bill_generation_supports_scor_reference_with_non_qr_iban() -> None:
     assert response.content.startswith(b"%PDF")
 
 
+def test_qr_bill_generation_supports_open_amount_bills() -> None:
+    response = client.post(
+        "/api/qr-bill",
+        json={
+            "account": "CH4431999123000889012",
+            "creditor": {
+                "name": "Example Practice AG",
+                "street": "Bahnhofstrasse",
+                "house_number": "1",
+                "postal_code": "8001",
+                "city": "Zürich",
+                "country_code": "CH",
+            },
+            "debtor": {
+                "name": "Max Muster",
+                "street": "Musterweg",
+                "house_number": "5",
+                "postal_code": "3000",
+                "city": "Bern",
+                "country_code": "CH",
+            },
+            "currency": "CHF",
+            "reference": "210000000003139471430009017",
+            "message": "Tarif 595 invoice",
+            "bill_information": "Tarif 595",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF")
+
+
 def test_qr_payload_uses_combined_addresses_when_house_number_is_missing() -> None:
     payload = build_swiss_qr_payload(
         QrBillRequest(
@@ -298,3 +331,18 @@ def test_xml_attachment_generation_returns_pdf() -> None:
     assert response.content.startswith(b"%PDF")
     attachments = PdfReader(BytesIO(response.content)).attachments
     assert attachments["invoice.xml"][0] == b'<invoice version="5.0"><total currency="CHF">125.40</total></invoice>'
+
+
+def test_xml_attachment_sanitizes_content_disposition_filename() -> None:
+    response = client.post(
+        "/api/xml-attachment",
+        json={
+            "title": "Tarif 595 XML attachment",
+            "filename": 'bad"\r\nname.xml',
+            "xml_content": '<invoice version="5.0"><total currency="CHF">125.40</total></invoice>',
+        },
+    )
+
+    assert response.status_code == 200
+    assert 'filename="bad_name.pdf"' in response.headers["content-disposition"]
+    assert "%0D%0A" in response.headers["content-disposition"]

@@ -60,7 +60,7 @@ class QrBillRequest(BaseModel):
     account: str = Field(..., min_length=5, max_length=34)
     creditor: Party
     debtor: Party
-    amount: Decimal = Field(..., gt=Decimal("0"))
+    amount: Decimal | None = Field(None, gt=Decimal("0"))
     currency: Literal["CHF", "EUR"] = "CHF"
     reference: str = Field("", max_length=27)
     message: str = Field("", max_length=140)
