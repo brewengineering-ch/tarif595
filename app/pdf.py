@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
 from io import BytesIO
+from math import ceil
 from typing import Iterable
 
 import qrcode
+import segno
 from PIL import ImageDraw
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import A4
@@ -16,6 +19,12 @@ from pystrich.datamatrix.placement import DataMatrixPlacer
 from pystrich.datamatrix.textencoder import TextEncoder, _SQUARE_SPECS
 
 from app.models import Party, QrBillRequest, ReimbursementSlipRequest, XmlAttachmentRequest, is_qr_iban
+from app.xml_attachment import (
+    MAX_QR_PAYLOAD_SIZE,
+    SWISS_TIMEZONE,
+    encode_xml_attachment,
+    extract_xml_attachment_metadata,
+)
 
 
 def _qr_image(payload: str, *, swiss_cross: bool = False) -> ImageReader:
@@ -157,15 +166,6 @@ def _text_block(pdf: canvas.Canvas, x: float, y: float, title: str, lines: Itera
         pdf.drawString(x, current_y, str(line))
         current_y -= 4.5 * mm
     return current_y
-
-
-def _wrap_preview_lines(value: str, width: int, max_lines: int) -> list[str]:
-    wrapped: list[str] = []
-    for raw_line in value.splitlines() or [""]:
-        wrapped.extend(raw_line[index : index + width] for index in range(0, len(raw_line), width) or [0])
-        if len(wrapped) >= max_lines:
-            return wrapped[:max_lines]
-    return wrapped[:max_lines]
 
 
 class _PageControlTextEncoder(TextEncoder):
@@ -521,36 +521,112 @@ def create_reimbursement_slip_pdf(request: ReimbursementSlipRequest) -> bytes:
 
 
 def create_xml_attachment_pdf(request: XmlAttachmentRequest) -> bytes:
+    metadata = extract_xml_attachment_metadata(request.xml_content)
+    encoded_xml = encode_xml_attachment(request.xml_content)
+    symbol_count = max(1, ceil(len(encoded_xml) / MAX_QR_PAYLOAD_SIZE))
+    qr_codes = segno.make_sequence(
+        encoded_xml,
+        error="L",
+        mode="byte",
+        boost_error=False,
+        symbol_count=symbol_count,
+    )
+
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
+    pdf.setTitle("Rückforderungsbeleg QR-Code Blatt")
 
-    pdf.setTitle(request.title)
-    pdf.setFont("Helvetica-Bold", 18)
-    pdf.drawString(20 * mm, height - 20 * mm, request.title)
-    pdf.setFont("Helvetica", 10)
-    pdf.drawString(20 * mm, height - 28 * mm, f"Embedded XML filename: {request.filename}")
+    page_size = 6
+    page_count = ceil(len(qr_codes) / page_size)
+    generated_at = datetime.now(SWISS_TIMEZONE)
+    for page_index in range(page_count):
+        pdf.setFont("Helvetica-Bold", 16)
+        pdf.drawString(14 * mm, height - 18 * mm, "Rückforderungsbeleg QR-Code Blatt")
+        pdf.setFont("Helvetica", 7)
+        pdf.drawRightString(
+            width - 27 * mm,
+            height - 14 * mm,
+            f"Release 5.0/Annex/{metadata.language}",
+        )
+        pdf.drawRightString(width - 27 * mm, height - 20 * mm, "Der Versicherung zustellen")
+        pdf.drawImage(
+            ImageReader(
+                _page_control_datamatrix(
+                    f"FD50{metadata.guid}{metadata.language}{metadata.tiers}AR{page_index + 1:02d}"
+                )
+            ),
+            width - 23 * mm,
+            height - 23 * mm,
+            width=10 * mm,
+            height=10 * mm,
+            mask="auto",
+        )
 
-    pdf.drawImage(_qr_image(request.xml_content), 20 * mm, height - 105 * mm, width=65 * mm, height=65 * mm)
+        pdf.setFont("Helvetica-Bold", 7)
+        pdf.drawString(14 * mm, height - 29 * mm, "Identifikation:")
+        pdf.setFont("Helvetica", 7)
+        identification = (
+            f"{metadata.request_id} / "
+            f"{metadata.request_date.strftime('%d.%m.%Y %H:%M:%S')} / "
+            f"{metadata.guid}"
+        )
+        pdf.drawString(33 * mm, height - 29 * mm, identification)
+        pdf.setFont("Helvetica-Bold", 7)
+        pdf.drawString(14 * mm, height - 34 * mm, "PatientIn:")
+        pdf.setFont("Helvetica", 7)
+        pdf.drawString(33 * mm, height - 34 * mm, metadata.patient[:155])
+        pdf.line(14 * mm, height - 36 * mm, width - 14 * mm, height - 36 * mm)
 
-    pdf.setFont("Helvetica-Bold", 11)
-    pdf.drawString(100 * mm, height - 45 * mm, "XML preview")
-    pdf.setFont("Helvetica", 8)
-    preview = request.xml_content[:1200]
-    text = pdf.beginText(100 * mm, height - 52 * mm)
-    for raw_line in _wrap_preview_lines(preview, width=55, max_lines=35):
-        text.textLine(raw_line)
-    if len(request.xml_content) > len(preview):
-        text.textLine("...")
-    pdf.drawText(text)
+        for position, qr_code in enumerate(qr_codes[page_index * page_size : (page_index + 1) * page_size]):
+            row, column = divmod(position, 3)
+            qr_buffer = BytesIO()
+            qr_code.save(qr_buffer, kind="png", scale=5, border=4)
+            qr_buffer.seek(0)
+            qr_size = 52 * mm
+            x = 14 * mm + column * 63 * mm
+            y = height - 91 * mm - row * 64 * mm
+            pdf.drawImage(ImageReader(qr_buffer), x, y, width=qr_size, height=qr_size, mask="auto")
+            pdf.setFont("Helvetica-Bold", 7)
+            pdf.drawCentredString(x + qr_size / 2, y - 4 * mm, f"QR-Code {page_index * page_size + position + 1}")
 
-    pdf.showPage()
+        pdf.line(14 * mm, 14 * mm, width - 14 * mm, 14 * mm)
+        pdf.setFont("Helvetica", 7)
+        pdf.drawString(
+            14 * mm,
+            10 * mm,
+            f"Rückforderungsbeleg QR-Code Blatt, generiert am {generated_at.strftime('%d.%m.%Y %H:%M:%S')}",
+        )
+        pdf.drawRightString(
+            width - 14 * mm,
+            10 * mm,
+            f"Seite {page_index + 1} / {page_count}",
+        )
+        pdf.showPage()
+
     pdf.save()
     writer = PdfWriter()
     reader = PdfReader(BytesIO(buffer.getvalue()))
     for page in reader.pages:
         writer.add_page(page)
     writer.add_attachment(request.filename, request.xml_content.encode("utf-8"))
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def create_combined_pdf(
+    qr_bill: bytes,
+    reimbursement_slip: bytes,
+    xml_attachment: bytes,
+    *,
+    xml_filename: str,
+    xml_content: str,
+) -> bytes:
+    writer = PdfWriter()
+    for document in (qr_bill, reimbursement_slip, xml_attachment):
+        writer.append(BytesIO(document))
+    writer.add_attachment(xml_filename, xml_content.encode("utf-8"))
     output = BytesIO()
     writer.write(output)
     return output.getvalue()

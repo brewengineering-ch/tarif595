@@ -4,3 +4,5 @@ reportlab==4.4.3
 qrcode==8.2
 pypdf==6.14.2
 pyStrich==0.20
+lxml==6.0.2
+segno==1.6.6
