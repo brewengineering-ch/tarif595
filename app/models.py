@@ -30,6 +30,18 @@ def is_valid_iso11649_reference(value: str) -> bool:
     return remainder == 1
 
 
+def is_valid_qr_reference(value: str) -> bool:
+    normalized = value.replace(" ", "")
+    if len(normalized) != 27 or not normalized.isdigit():
+        return False
+
+    table = [0, 9, 4, 6, 8, 2, 7, 1, 3, 5]
+    carry = 0
+    for digit in normalized:
+        carry = table[(carry + int(digit)) % 10]
+    return carry == 0
+
+
 class Party(BaseModel):
     name: str = Field(..., min_length=1, max_length=70)
     street: str = Field(..., min_length=1, max_length=70)
@@ -70,8 +82,8 @@ class QrBillRequest(BaseModel):
             return self
 
         if is_qr_iban(self.account):
-            if not self.reference.isdigit():
-                raise ValueError("QR-IBAN payments require a numeric QR reference.")
+            if not is_valid_qr_reference(self.reference):
+                raise ValueError("QR-IBAN payments require a valid 27-digit QR reference.")
             return self
 
         if not is_valid_iso11649_reference(self.reference):

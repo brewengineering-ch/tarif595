@@ -44,7 +44,6 @@ Interactive API documentation is available at `/docs`.
 ## Tests
 
 ```bash
-pip install -r requirements.txt
-pip install pytest httpx
+pip install -r requirements-dev.txt
 pytest
 ```
