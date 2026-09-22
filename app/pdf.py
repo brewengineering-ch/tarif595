@@ -93,7 +93,7 @@ def build_swiss_qr_payload(request: QrBillRequest) -> str:
             request.currency,
             *_address_fields(debtor),
             reference_type,
-            request.reference,
+            request.reference or "",
             request.message,
             request.bill_information,
             "EPD",

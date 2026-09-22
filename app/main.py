@@ -25,6 +25,8 @@ INDEX_HTML = """<!DOCTYPE html>
       label { display: block; font-size: 0.95rem; margin-top: 0.75rem; }
       input, textarea, select { width: 100%; padding: 0.5rem; margin-top: 0.25rem; box-sizing: border-box; }
       button { margin-top: 1rem; padding: 0.6rem 1rem; }
+      .status { margin-top: 0.75rem; font-size: 0.95rem; }
+      .download-link { display: inline-block; margin-top: 0.5rem; }
       code { background: #f6f8fa; padding: 0.1rem 0.3rem; border-radius: 4px; }
     </style>
   </head>
@@ -56,6 +58,8 @@ INDEX_HTML = """<!DOCTYPE html>
         <label>Message <input name="message" value="Tarif 595 invoice" /></label>
         <label>Bill information <input name="bill_information" value="Tarif 595" /></label>
         <button type="submit">Download PDF</button>
+        <p class="status" role="status" aria-live="polite"></p>
+        <a class="download-link" hidden></a>
       </form>
 
       <form data-endpoint="/api/reimbursement-slip" data-filename="reimbursement-slip.pdf">
@@ -71,6 +75,8 @@ INDEX_HTML = """<!DOCTYPE html>
         </label>
         <label>Notes <textarea name="notes">Generated for direct reimbursement.</textarea></label>
         <button type="submit">Download PDF</button>
+        <p class="status" role="status" aria-live="polite"></p>
+        <a class="download-link" hidden></a>
       </form>
 
       <form data-endpoint="/api/xml-attachment" data-filename="xml-attachment.pdf">
@@ -85,6 +91,8 @@ INDEX_HTML = """<!DOCTYPE html>
 &lt;/invoice&gt;</textarea>
         </label>
         <button type="submit">Download PDF</button>
+        <p class="status" role="status" aria-live="polite"></p>
+        <a class="download-link" hidden></a>
       </form>
     </div>
 
@@ -115,6 +123,14 @@ INDEX_HTML = """<!DOCTYPE html>
       document.querySelectorAll("form[data-endpoint]").forEach((form) => {
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
+          const status = form.querySelector(".status");
+          const downloadLink = form.querySelector(".download-link");
+          if (downloadLink.dataset.objectUrl) {
+            URL.revokeObjectURL(downloadLink.dataset.objectUrl);
+            delete downloadLink.dataset.objectUrl;
+          }
+          status.textContent = "Generating PDF...";
+          downloadLink.hidden = true;
           const response = await fetch(form.dataset.endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -128,7 +144,7 @@ INDEX_HTML = """<!DOCTYPE html>
             } catch (_) {
               message = await response.text();
             }
-            alert(`Request failed (${response.status}): ${message}`);
+            status.textContent = `Request failed (${response.status}): ${message}`;
             return;
           }
           const blob = await response.blob();
@@ -136,7 +152,12 @@ INDEX_HTML = """<!DOCTYPE html>
           link.href = URL.createObjectURL(blob);
           link.download = form.dataset.filename;
           link.click();
-          setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+          downloadLink.href = link.href;
+          downloadLink.download = form.dataset.filename;
+          downloadLink.textContent = `Download ${form.dataset.filename} again`;
+          downloadLink.dataset.objectUrl = link.href;
+          downloadLink.hidden = false;
+          status.textContent = "PDF ready.";
         });
       });
     </script>
