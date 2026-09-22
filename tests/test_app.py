@@ -4,12 +4,13 @@ import sys
 
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
+import zxingcpp
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.main import app
-from app.models import QrBillRequest
-from app.pdf import build_swiss_qr_payload
+from app.models import QrBillRequest, ReimbursementSlipRequest
+from app.pdf import _page_control_datamatrix, build_page_control_payload, build_swiss_qr_payload
 
 
 client = TestClient(app)
@@ -313,6 +314,9 @@ def test_reimbursement_slip_generation_returns_pdf() -> None:
             "insured_person": "Max Muster",
             "invoice_number": "T595-2026-0001",
             "treatment_period": "2026-09-01 to 2026-09-15",
+            "document_guid": "3c6bc0bd140c4226b9aab71c57178000",
+            "language": "de",
+            "tiers": "G",
             "amount": "125.40",
             "currency": "CHF",
             "notes": "Generated for direct reimbursement.",
@@ -322,6 +326,39 @@ def test_reimbursement_slip_generation_returns_pdf() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
     assert response.content.startswith(b"%PDF")
+    text = PdfReader(BytesIO(response.content)).pages[0].extract_text()
+    assert "Release 5.0 / General / de" in text
+    assert "Der Versicherung zustellen" in text
+    assert "Rechnungsangaben" in text
+    assert "Leistungsübersicht" in text
+    assert "Rechnungsbetrag:" in text
+    assert "T595-2026-0001" in text
+    assert "125.40" in text
+
+
+def test_reimbursement_page_control_datamatrix() -> None:
+    request = ReimbursementSlipRequest(
+        provider_name="Example Practice AG",
+        insurer_name="Example Versicherung",
+        insured_person="Max Muster",
+        invoice_number="T595-2026-0001",
+        treatment_period="2026-09-01 to 2026-09-15",
+        document_guid="00000000000000000000000000000000",
+        language="de",
+        tiers="G",
+        amount="125.40",
+    )
+
+    payload = build_page_control_payload(request, 1)
+    image = _page_control_datamatrix(payload)
+    decoded = zxingcpp.read_barcode(image)
+
+    assert payload == "FD5000000000000000000000000000000000deGGR01"
+    assert len(payload.encode("ascii")) == 43
+    assert image.size == (240, 240)
+    assert decoded is not None
+    assert decoded.format == zxingcpp.BarcodeFormat.DataMatrix
+    assert decoded.text == payload
 
 
 def test_xml_attachment_generation_returns_pdf() -> None:
