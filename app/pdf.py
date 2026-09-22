@@ -25,6 +25,28 @@ def _party_lines(party: Party) -> list[str]:
     return [party.name, line_2, f"{party.postal_code} {party.city}", party.country_code]
 
 
+def _address_fields(party: Party) -> list[str]:
+    if party.house_number:
+        return [
+            "S",
+            party.name,
+            party.street,
+            party.house_number,
+            party.postal_code,
+            party.city,
+            party.country_code,
+        ]
+    return [
+        "K",
+        party.name,
+        party.street,
+        f"{party.postal_code} {party.city}",
+        "",
+        "",
+        party.country_code,
+    ]
+
+
 def _text_block(pdf: canvas.Canvas, x: float, y: float, title: str, lines: Iterable[str]) -> float:
     pdf.setFont("Helvetica-Bold", 11)
     pdf.drawString(x, y, title)
@@ -60,13 +82,7 @@ def build_swiss_qr_payload(request: QrBillRequest) -> str:
             "0200",
             "1",
             request.account,
-            "S",
-            creditor.name,
-            creditor.street,
-            creditor.house_number,
-            creditor.postal_code,
-            creditor.city,
-            creditor.country_code,
+            *_address_fields(creditor),
             "",
             "",
             "",
@@ -75,13 +91,7 @@ def build_swiss_qr_payload(request: QrBillRequest) -> str:
             "",
             f"{request.amount:.2f}",
             request.currency,
-            "S",
-            debtor.name,
-            debtor.street,
-            debtor.house_number,
-            debtor.postal_code,
-            debtor.city,
-            debtor.country_code,
+            *_address_fields(debtor),
             reference_type,
             request.reference,
             request.message,

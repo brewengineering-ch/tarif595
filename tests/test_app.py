@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.main import app
+from app.models import QrBillRequest
+from app.pdf import build_swiss_qr_payload
 
 
 client = TestClient(app)
@@ -95,6 +97,38 @@ def test_qr_bill_generation_supports_scor_reference_with_non_qr_iban() -> None:
     assert response.content.startswith(b"%PDF")
 
 
+def test_qr_payload_uses_combined_addresses_when_house_number_is_missing() -> None:
+    payload = build_swiss_qr_payload(
+        QrBillRequest(
+            account="CH9300762011623852957",
+            creditor={
+                "name": "Example Practice AG",
+                "street": "Bahnhofstrasse",
+                "house_number": "",
+                "postal_code": "8001",
+                "city": "Zürich",
+                "country_code": "CH",
+            },
+            debtor={
+                "name": "Max Muster",
+                "street": "Musterweg",
+                "house_number": "",
+                "postal_code": "3000",
+                "city": "Bern",
+                "country_code": "CH",
+            },
+            amount="125.40",
+            currency="CHF",
+            reference="RF18539007547034",
+            message="Tarif 595 invoice",
+            bill_information="Tarif 595",
+        )
+    ).splitlines()
+
+    assert payload[4] == "K"
+    assert payload[19] == "K"
+
+
 def test_qr_bill_generation_rejects_qrr_reference_with_non_qr_iban() -> None:
     response = client.post(
         "/api/qr-bill",
@@ -125,7 +159,40 @@ def test_qr_bill_generation_rejects_qrr_reference_with_non_qr_iban() -> None:
     )
 
     assert response.status_code == 422
-    assert "starting with RF" in response.text
+    assert "valid ISO 11649" in response.text
+
+
+def test_qr_bill_generation_rejects_invalid_scor_reference() -> None:
+    response = client.post(
+        "/api/qr-bill",
+        json={
+            "account": "CH9300762011623852957",
+            "creditor": {
+                "name": "Example Practice AG",
+                "street": "Bahnhofstrasse",
+                "house_number": "",
+                "postal_code": "8001",
+                "city": "Zürich",
+                "country_code": "CH",
+            },
+            "debtor": {
+                "name": "Max Muster",
+                "street": "Musterweg",
+                "house_number": "",
+                "postal_code": "3000",
+                "city": "Bern",
+                "country_code": "CH",
+            },
+            "amount": "125.40",
+            "currency": "CHF",
+            "reference": "RF18539007547035",
+            "message": "Tarif 595 invoice",
+            "bill_information": "Tarif 595",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "valid ISO 11649" in response.text
 
 
 def test_qr_bill_generation_rejects_non_numeric_reference_with_qr_iban() -> None:

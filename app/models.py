@@ -16,6 +16,20 @@ def is_qr_iban(value: str) -> bool:
     return iid.isdigit() and 30000 <= int(iid) <= 31999
 
 
+def is_valid_iso11649_reference(value: str) -> bool:
+    normalized = value.replace(" ", "").upper()
+    if not normalized.startswith("RF") or not (5 <= len(normalized) <= 25) or not normalized.isalnum():
+        return False
+
+    rearranged = normalized[4:] + normalized[:4]
+    expanded = "".join(str(int(character, 36)) if character.isalpha() else character for character in rearranged)
+
+    remainder = 0
+    for character in expanded:
+        remainder = (remainder * 10 + int(character)) % 97
+    return remainder == 1
+
+
 class Party(BaseModel):
     name: str = Field(..., min_length=1, max_length=70)
     street: str = Field(..., min_length=1, max_length=70)
@@ -60,8 +74,8 @@ class QrBillRequest(BaseModel):
                 raise ValueError("QR-IBAN payments require a numeric QR reference.")
             return self
 
-        if not self.reference.startswith("RF"):
-            raise ValueError("Non-QR IBAN payments require an ISO 11649 creditor reference starting with RF.")
+        if not is_valid_iso11649_reference(self.reference):
+            raise ValueError("Non-QR IBAN payments require a valid ISO 11649 creditor reference.")
         return self
 
 
