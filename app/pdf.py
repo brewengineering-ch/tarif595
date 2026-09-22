@@ -9,7 +9,7 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
-from app.models import Party, QrBillRequest, ReimbursementSlipRequest, XmlAttachmentRequest
+from app.models import Party, QrBillRequest, ReimbursementSlipRequest, XmlAttachmentRequest, is_qr_iban
 
 
 def _qr_image(payload: str) -> ImageReader:
@@ -39,13 +39,18 @@ def _text_block(pdf: canvas.Canvas, x: float, y: float, title: str, lines: Itera
 def build_swiss_qr_payload(request: QrBillRequest) -> str:
     creditor = request.creditor
     debtor = request.debtor
-    reference_type = "QRR" if request.reference else "NON"
+    if not request.reference:
+        reference_type = "NON"
+    elif is_qr_iban(request.account):
+        reference_type = "QRR"
+    else:
+        reference_type = "SCOR"
     return "\n".join(
         [
             "SPC",
             "0200",
             "1",
-            request.account.replace(" ", ""),
+            request.account,
             "S",
             creditor.name,
             creditor.street,

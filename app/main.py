@@ -121,7 +121,14 @@ INDEX_HTML = """<!DOCTYPE html>
             body: JSON.stringify(toJson(form))
           });
           if (!response.ok) {
-            alert("Request failed");
+            let message = response.statusText;
+            try {
+              const payload = await response.json();
+              message = JSON.stringify(payload.detail ?? payload);
+            } catch (_) {
+              message = await response.text();
+            }
+            alert(`Request failed (${response.status}): ${message}`);
             return;
           }
           const blob = await response.blob();

@@ -1,7 +1,19 @@
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def normalize_iban(value: str) -> str:
+    return value.replace(" ", "").upper()
+
+
+def is_qr_iban(value: str) -> bool:
+    normalized = normalize_iban(value)
+    if len(normalized) < 9 or normalized[:2] not in {"CH", "LI"}:
+        return False
+    iid = normalized[4:9]
+    return iid.isdigit() and 30000 <= int(iid) <= 31999
 
 
 class Party(BaseModel):
@@ -27,6 +39,30 @@ class QrBillRequest(BaseModel):
     reference: str = Field("", max_length=27)
     message: str = Field("", max_length=140)
     bill_information: str = Field("", max_length=140)
+
+    @field_validator("account")
+    @classmethod
+    def normalize_account(cls, value: str) -> str:
+        return normalize_iban(value)
+
+    @field_validator("reference")
+    @classmethod
+    def normalize_reference(cls, value: str) -> str:
+        return value.replace(" ", "").upper()
+
+    @model_validator(mode="after")
+    def validate_reference_rules(self) -> "QrBillRequest":
+        if not self.reference:
+            return self
+
+        if is_qr_iban(self.account):
+            if not self.reference.isdigit():
+                raise ValueError("QR-IBAN payments require a numeric QR reference.")
+            return self
+
+        if not self.reference.startswith("RF"):
+            raise ValueError("Non-QR IBAN payments require an ISO 11649 creditor reference starting with RF.")
+        return self
 
 
 class ReimbursementSlipRequest(BaseModel):

@@ -61,6 +61,73 @@ def test_qr_bill_generation_returns_pdf() -> None:
     assert response.content.startswith(b"%PDF")
 
 
+def test_qr_bill_generation_supports_scor_reference_with_non_qr_iban() -> None:
+    response = client.post(
+        "/api/qr-bill",
+        json={
+            "account": "CH9300762011623852957",
+            "creditor": {
+                "name": "Example Practice AG",
+                "street": "Bahnhofstrasse",
+                "house_number": "1",
+                "postal_code": "8001",
+                "city": "Zürich",
+                "country_code": "CH",
+            },
+            "debtor": {
+                "name": "Max Muster",
+                "street": "Musterweg",
+                "house_number": "5",
+                "postal_code": "3000",
+                "city": "Bern",
+                "country_code": "CH",
+            },
+            "amount": "125.40",
+            "currency": "CHF",
+            "reference": "RF18539007547034",
+            "message": "Tarif 595 invoice",
+            "bill_information": "Tarif 595",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF")
+
+
+def test_qr_bill_generation_rejects_qrr_reference_with_non_qr_iban() -> None:
+    response = client.post(
+        "/api/qr-bill",
+        json={
+            "account": "CH9300762011623852957",
+            "creditor": {
+                "name": "Example Practice AG",
+                "street": "Bahnhofstrasse",
+                "house_number": "1",
+                "postal_code": "8001",
+                "city": "Zürich",
+                "country_code": "CH",
+            },
+            "debtor": {
+                "name": "Max Muster",
+                "street": "Musterweg",
+                "house_number": "5",
+                "postal_code": "3000",
+                "city": "Bern",
+                "country_code": "CH",
+            },
+            "amount": "125.40",
+            "currency": "CHF",
+            "reference": "210000000003139471430009017",
+            "message": "Tarif 595 invoice",
+            "bill_information": "Tarif 595",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "starting with RF" in response.text
+
+
 def test_reimbursement_slip_generation_returns_pdf() -> None:
     response = client.post(
         "/api/reimbursement-slip",
