@@ -9,6 +9,7 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
 from app.models import Party, QrBillRequest, ReimbursementSlipRequest, XmlAttachmentRequest, is_qr_iban
@@ -23,7 +24,7 @@ def _qr_image(payload: str, *, swiss_cross: bool = False) -> ImageReader:
     if swiss_cross:
         draw = ImageDraw.Draw(image)
         size = image.size[0]
-        emblem_size = size // 5
+        emblem_size = round(size * 7 / 46)
         emblem_left = (size - emblem_size) // 2
         emblem_top = (size - emblem_size) // 2
         emblem_right = emblem_left + emblem_size
@@ -45,7 +46,81 @@ def _qr_image(payload: str, *, swiss_cross: bool = False) -> ImageReader:
 
 def _party_lines(party: Party) -> list[str]:
     line_2 = f"{party.street} {party.house_number}".strip()
-    return [party.name, line_2, f"{party.postal_code} {party.city}", party.country_code]
+    return [party.name, line_2, f"{party.postal_code} {party.city}"]
+
+
+def _group_from_right(value: str, group_size: int) -> str:
+    groups: list[str] = []
+    while value:
+        groups.append(value[-group_size:])
+        value = value[:-group_size]
+    return " ".join(reversed(groups))
+
+
+def _format_account(account: str) -> str:
+    return " ".join(account[index : index + 4] for index in range(0, len(account), 4))
+
+
+def _format_reference(reference: str) -> str:
+    if not reference:
+        return ""
+    if reference.startswith("RF"):
+        return " ".join(reference[index : index + 4] for index in range(0, len(reference), 4))
+    return _group_from_right(reference, 5)
+
+
+def _wrap_text(value: str, font_name: str, font_size: float, max_width: float) -> list[str]:
+    lines: list[str] = []
+    for paragraph in value.splitlines() or [""]:
+        words = paragraph.split()
+        if not words:
+            lines.append("")
+            continue
+        current = words.pop(0)
+        for word in words:
+            candidate = f"{current} {word}"
+            if stringWidth(candidate, font_name, font_size) <= max_width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+    return lines
+
+
+def _draw_field(
+    pdf: canvas.Canvas,
+    x: float,
+    y: float,
+    label: str,
+    lines: Iterable[str],
+    *,
+    max_width: float,
+    value_font_size: float = 8,
+    leading: float = 3.2 * mm,
+) -> float:
+    pdf.setFont("Helvetica-Bold", 6)
+    pdf.drawString(x, y, label)
+    current_y = y - 3 * mm
+    pdf.setFont("Helvetica", value_font_size)
+    for value in lines:
+        for line in _wrap_text(str(value), "Helvetica", value_font_size, max_width):
+            pdf.drawString(x, current_y, line)
+            current_y -= leading
+    return current_y - 1.5 * mm
+
+
+def _draw_cut_mark(pdf: canvas.Canvas, x: float, y: float, *, vertical: bool = False) -> None:
+    pdf.saveState()
+    pdf.setLineWidth(0.45)
+    pdf.circle(x, y, 0.8 * mm, stroke=1, fill=0)
+    if vertical:
+        pdf.line(x - 1.6 * mm, y + 2.8 * mm, x - 0.4 * mm, y + 0.6 * mm)
+        pdf.line(x + 1.6 * mm, y + 2.8 * mm, x + 0.4 * mm, y + 0.6 * mm)
+    else:
+        pdf.line(x + 0.6 * mm, y + 0.4 * mm, x + 2.8 * mm, y + 1.6 * mm)
+        pdf.line(x + 0.6 * mm, y - 0.4 * mm, x + 2.8 * mm, y - 1.6 * mm)
+    pdf.restoreState()
 
 
 def _address_fields(party: Party) -> list[str]:
@@ -128,30 +203,133 @@ def build_swiss_qr_payload(request: QrBillRequest) -> str:
 def create_qr_bill_pdf(request: QrBillRequest) -> bytes:
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+    _, height = A4
+    section_height = 105 * mm
+    receipt_width = 62 * mm
+    receipt_x = 5 * mm
+    payment_x = 67 * mm
+    details_x = 118 * mm
 
     pdf.setTitle("Swiss QR bill")
-    pdf.setFont("Helvetica-Bold", 18)
-    pdf.drawString(20 * mm, height - 20 * mm, "Swiss QR bill")
+    pdf.setStrokeColorRGB(0.35, 0.35, 0.35)
+    pdf.setDash(1, 2)
+    pdf.line(0, section_height, A4[0], section_height)
+    pdf.line(receipt_width, 0, receipt_width, section_height)
+    pdf.setDash()
+    _draw_cut_mark(pdf, 4 * mm, section_height)
+    _draw_cut_mark(pdf, receipt_width, section_height - 4 * mm, vertical=True)
 
+    pdf.setFillColorRGB(0, 0, 0)
+    pdf.setFont("Helvetica-Bold", 11)
+    pdf.drawString(receipt_x, 98 * mm, "Receipt")
+    pdf.drawString(payment_x, 98 * mm, "Payment part")
+
+    account_lines = [_format_account(request.account), *_party_lines(request.creditor)]
+    reference = _format_reference(request.reference)
+
+    receipt_y = _draw_field(
+        pdf,
+        receipt_x,
+        91 * mm,
+        "Account / Payable to",
+        account_lines,
+        max_width=52 * mm,
+        value_font_size=7,
+        leading=3 * mm,
+    )
+    if reference:
+        receipt_y = _draw_field(
+            pdf,
+            receipt_x,
+            receipt_y,
+            "Reference",
+            [reference],
+            max_width=52 * mm,
+            value_font_size=7,
+            leading=3 * mm,
+        )
+    _draw_field(
+        pdf,
+        receipt_x,
+        receipt_y,
+        "Payable by",
+        _party_lines(request.debtor),
+        max_width=52 * mm,
+        value_font_size=7,
+        leading=3 * mm,
+    )
+
+    pdf.setFont("Helvetica-Bold", 6)
+    pdf.drawString(receipt_x, 36 * mm, "Currency")
+    pdf.drawString(37 * mm, 36 * mm, "Amount")
+    pdf.setFont("Helvetica", 8)
+    pdf.drawString(receipt_x, 32.5 * mm, request.currency)
+    if request.amount is not None:
+        pdf.drawRightString(57 * mm, 32.5 * mm, f"{request.amount:.2f}")
+    else:
+        pdf.rect(36 * mm, 19 * mm, 21 * mm, 13 * mm, stroke=1, fill=0)
+    pdf.setFont("Helvetica-Bold", 6)
+    pdf.drawRightString(57 * mm, 21 * mm, "Acceptance point")
+
+    qr_size = 46 * mm
+    pdf.drawImage(
+        _qr_image(build_swiss_qr_payload(request), swiss_cross=True),
+        payment_x,
+        42 * mm,
+        width=qr_size,
+        height=qr_size,
+    )
+
+    details_y = _draw_field(
+        pdf,
+        details_x,
+        94 * mm,
+        "Account / Payable to",
+        account_lines,
+        max_width=87 * mm,
+        leading=3.2 * mm,
+    )
+    if reference:
+        details_y = _draw_field(
+            pdf,
+            details_x,
+            details_y,
+            "Reference",
+            [reference],
+            max_width=87 * mm,
+            leading=3.2 * mm,
+        )
+
+    additional_information = [value for value in (request.message, request.bill_information) if value]
+    if additional_information:
+        details_y = _draw_field(
+            pdf,
+            details_x,
+            details_y,
+            "Additional information",
+            additional_information,
+            max_width=87 * mm,
+            leading=3.2 * mm,
+        )
+    _draw_field(
+        pdf,
+        details_x,
+        details_y,
+        "Payable by",
+        _party_lines(request.debtor),
+        max_width=87 * mm,
+        leading=3.2 * mm,
+    )
+
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(payment_x, 36 * mm, "Currency")
+    pdf.drawString(91 * mm, 36 * mm, "Amount")
     pdf.setFont("Helvetica", 10)
-    pdf.drawString(20 * mm, height - 28 * mm, "Generated in memory for Tarif 595 workflows.")
-
-    _text_block(pdf, 20 * mm, height - 45 * mm, "Creditor", _party_lines(request.creditor))
-    _text_block(pdf, 110 * mm, height - 45 * mm, "Debtor", _party_lines(request.debtor))
-
-    amount_label = f"{request.amount:.2f} {request.currency}" if request.amount is not None else f"Open amount ({request.currency})"
-    pdf.setFont("Helvetica-Bold", 12)
-    pdf.drawString(20 * mm, height - 90 * mm, f"Amount: {amount_label}")
-    pdf.setFont("Helvetica", 10)
-    pdf.drawString(20 * mm, height - 98 * mm, f"Account: {request.account}")
-    pdf.drawString(20 * mm, height - 106 * mm, f"Reference: {request.reference or '-'}")
-    pdf.drawString(20 * mm, height - 114 * mm, f"Message: {request.message or '-'}")
-    pdf.drawString(20 * mm, height - 122 * mm, f"Bill information: {request.bill_information or '-'}")
-
-    pdf.drawImage(_qr_image(build_swiss_qr_payload(request), swiss_cross=True), 20 * mm, 30 * mm, width=55 * mm, height=55 * mm)
-    pdf.setFont("Helvetica", 9)
-    pdf.drawString(20 * mm, 25 * mm, "Swiss QR payload encoded according to the SPC structure.")
+    pdf.drawString(payment_x, 31.5 * mm, request.currency)
+    if request.amount is not None:
+        pdf.drawRightString(113 * mm, 31.5 * mm, f"{request.amount:.2f}")
+    else:
+        pdf.rect(90 * mm, 16 * mm, 23 * mm, 15 * mm, stroke=1, fill=0)
 
     pdf.showPage()
     pdf.save()

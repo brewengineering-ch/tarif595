@@ -41,6 +41,10 @@ docker run --rm -p 8000:8000 tarif595
 
 Interactive API documentation is available at `/docs`.
 
+## Reference documentation
+
+The repository includes the [Swiss Implementation Guidelines for the QR-bill, version 2.3](docs/ig-qr-bill-v2.3-en.pdf), which defines the QR payload and provides the schematic payment-part example used by this application.
+
 ## Tests
 
 ```bash

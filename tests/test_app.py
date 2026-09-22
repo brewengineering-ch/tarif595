@@ -63,6 +63,14 @@ def test_qr_bill_generation_returns_pdf() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
     assert response.content.startswith(b"%PDF")
+    page = PdfReader(BytesIO(response.content)).pages[0]
+    text = page.extract_text()
+    assert round(float(page.mediabox.width), 2) == 595.28
+    assert round(float(page.mediabox.height), 2) == 841.89
+    assert "Receipt" in text
+    assert "Payment part" in text
+    assert "Account / Payable to" in text
+    assert "Acceptance point" in text
 
 
 def test_qr_bill_generation_supports_scor_reference_with_non_qr_iban() -> None:
