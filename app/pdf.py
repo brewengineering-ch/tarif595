@@ -4,6 +4,8 @@ from io import BytesIO
 from typing import Iterable
 
 import qrcode
+from PIL import ImageDraw
+from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
@@ -12,8 +14,29 @@ from reportlab.pdfgen import canvas
 from app.models import Party, QrBillRequest, ReimbursementSlipRequest, XmlAttachmentRequest, is_qr_iban
 
 
-def _qr_image(payload: str) -> ImageReader:
-    image = qrcode.make(payload)
+def _qr_image(payload: str, *, swiss_cross: bool = False) -> ImageReader:
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=4, box_size=8)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+    if swiss_cross:
+        draw = ImageDraw.Draw(image)
+        size = image.size[0]
+        emblem_size = size // 5
+        emblem_left = (size - emblem_size) // 2
+        emblem_top = (size - emblem_size) // 2
+        emblem_right = emblem_left + emblem_size
+        emblem_bottom = emblem_top + emblem_size
+        draw.rectangle((emblem_left, emblem_top, emblem_right, emblem_bottom), fill="black")
+
+        arm = max(2, emblem_size // 6)
+        inset = max(2, emblem_size // 4)
+        mid_x = size // 2
+        mid_y = size // 2
+        draw.rectangle((mid_x - arm // 2, emblem_top + inset, mid_x + arm // 2, emblem_bottom - inset), fill="white")
+        draw.rectangle((emblem_left + inset, mid_y - arm // 2, emblem_right - inset, mid_y + arm // 2), fill="white")
+
     output = BytesIO()
     image.save(output, format="PNG")
     output.seek(0)
@@ -124,7 +147,7 @@ def create_qr_bill_pdf(request: QrBillRequest) -> bytes:
     pdf.drawString(20 * mm, height - 114 * mm, f"Message: {request.message or '-'}")
     pdf.drawString(20 * mm, height - 122 * mm, f"Bill information: {request.bill_information or '-'}")
 
-    pdf.drawImage(_qr_image(build_swiss_qr_payload(request)), 20 * mm, 30 * mm, width=55 * mm, height=55 * mm)
+    pdf.drawImage(_qr_image(build_swiss_qr_payload(request), swiss_cross=True), 20 * mm, 30 * mm, width=55 * mm, height=55 * mm)
     pdf.setFont("Helvetica", 9)
     pdf.drawString(20 * mm, 25 * mm, "Swiss QR payload encoded according to the SPC structure.")
 
@@ -196,4 +219,11 @@ def create_xml_attachment_pdf(request: XmlAttachmentRequest) -> bytes:
 
     pdf.showPage()
     pdf.save()
-    return buffer.getvalue()
+    writer = PdfWriter()
+    reader = PdfReader(BytesIO(buffer.getvalue()))
+    for page in reader.pages:
+        writer.add_page(page)
+    writer.add_attachment(request.filename, request.xml_content.encode("utf-8"))
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()

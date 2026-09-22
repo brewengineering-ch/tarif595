@@ -1,7 +1,9 @@
+from io import BytesIO
 from pathlib import Path
 import sys
 
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -294,3 +296,5 @@ def test_xml_attachment_generation_returns_pdf() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
     assert response.content.startswith(b"%PDF")
+    attachments = PdfReader(BytesIO(response.content)).attachments
+    assert attachments["invoice.xml"][0] == b'<invoice version="5.0"><total currency="CHF">125.40</total></invoice>'
