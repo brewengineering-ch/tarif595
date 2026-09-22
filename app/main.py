@@ -72,6 +72,13 @@ INDEX_HTML = """<!DOCTYPE html>
         <label>Insured person <input name="insured_person" value="Max Muster" /></label>
         <label>Invoice number <input name="invoice_number" value="T595-2026-0001" /></label>
         <label>Treatment period <input name="treatment_period" value="2026-09-01 to 2026-09-15" /></label>
+        <label>XML document GUID <input name="document_guid" pattern="[0-9A-Fa-f]{32}" maxlength="32" /></label>
+        <label>Language
+          <select name="language"><option>de</option><option>fr</option><option>it</option></select>
+        </label>
+        <label>Billing method
+          <select name="tiers"><option value="G">Tiers Garant</option><option value="P">Tiers Payant</option><option value="S">Tiers Soldant</option></select>
+        </label>
         <label>Amount <input name="amount" value="125.40" type="number" step="0.01" /></label>
         <label>Currency
           <select name="currency"><option>CHF</option><option>EUR</option></select>
@@ -100,6 +107,8 @@ INDEX_HTML = """<!DOCTYPE html>
     </div>
 
     <script>
+      document.querySelector('input[name="document_guid"]').value = crypto.randomUUID().replaceAll("-", "");
+
       const toJson = (form) => {
         const data = Object.fromEntries(new FormData(form).entries());
         if (form.dataset.endpoint === "/api/qr-bill") {

@@ -11,6 +11,9 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
+from pystrich.datamatrix import DataMatrixData, DataMatrixEncoder
+from pystrich.datamatrix.placement import DataMatrixPlacer
+from pystrich.datamatrix.textencoder import TextEncoder, _SQUARE_SPECS
 
 from app.models import Party, QrBillRequest, ReimbursementSlipRequest, XmlAttachmentRequest, is_qr_iban
 
@@ -163,6 +166,43 @@ def _wrap_preview_lines(value: str, width: int, max_lines: int) -> list[str]:
         if len(wrapped) >= max_lines:
             return wrapped[:max_lines]
     return wrapped[:max_lines]
+
+
+class _PageControlTextEncoder(TextEncoder):
+    def _select_spec(self, unpadded_len: int, symbol_shape: str):
+        selected = super()._select_spec(unpadded_len, symbol_shape)
+        required = next(
+            spec
+            for spec in _SQUARE_SPECS
+            if (spec.region_cols + 2) * spec.h_regions == 24
+        )
+        return required if selected.data_words < required.data_words else selected
+
+
+class _PageControlDataMatrix(DataMatrixEncoder):
+    def __init__(self, payload: str) -> None:
+        encoder = _PageControlTextEncoder()
+        codewords = encoder.encode(
+            DataMatrixData(payload, encoding="ascii"),
+            symbol_shape="square",
+        )
+        self.width = 0
+        self.height = 0
+        self.regions = (encoder.spec.h_regions, encoder.spec.v_regions)
+        self.quiet_zone = 0
+        self.matrix = [[None] * encoder.mapping_cols for _ in range(encoder.mapping_rows)]
+        DataMatrixPlacer().place(codewords, self.matrix)
+
+
+def build_page_control_payload(request: ReimbursementSlipRequest, page_number: int) -> str:
+    return f"FD50{request.document_guid}{request.language}{request.tiers}GR{page_number:02d}"
+
+
+def _page_control_datamatrix(payload: str):
+    image = _PageControlDataMatrix(payload).get_pilimage(cellsize=10)
+    if image.size != (240, 240):
+        raise ValueError("Page control Data Matrix must contain exactly 24x24 modules.")
+    return image
 
 
 def build_swiss_qr_payload(request: QrBillRequest) -> str:
@@ -342,31 +382,138 @@ def create_reimbursement_slip_pdf(request: ReimbursementSlipRequest) -> bytes:
     width, height = A4
 
     pdf.setTitle("Rückforderungsbeleg")
-    pdf.setFont("Helvetica-Bold", 18)
-    pdf.drawString(20 * mm, height - 20 * mm, "Rückforderungsbeleg")
-    pdf.setFont("Helvetica", 10)
-    pdf.drawString(20 * mm, height - 28 * mm, "Human-readable reimbursement slip for Tarif 595 invoices.")
+    margin = 12 * mm
+    content_width = width - 2 * margin
+    label_width = 42 * mm
+    green = (0.9, 1, 0.9)
 
-    y = height - 45 * mm
-    fields = [
-        ("Leistungserbringer", request.provider_name),
-        ("Versicherung", request.insurer_name),
-        ("Versicherte Person", request.insured_person),
-        ("Rechnungsnummer", request.invoice_number),
-        ("Behandlungsperiode", request.treatment_period),
-        ("Betrag", f"{request.amount:.2f} {request.currency}"),
-        ("Notizen", request.notes or "-"),
-    ]
-
-    for label, value in fields:
-        pdf.setFont("Helvetica-Bold", 11)
-        pdf.drawString(20 * mm, y, label)
-        pdf.setFont("Helvetica", 10)
-        text = pdf.beginText(70 * mm, y)
-        for line in str(value).splitlines() or ["-"]:
+    def draw_row(y: float, label: str, value: str, *, row_height: float = 8 * mm) -> float:
+        pdf.setFillColorRGB(*green)
+        pdf.rect(margin, y - row_height, label_width, row_height, stroke=0, fill=1)
+        pdf.setFillColorRGB(1, 1, 1)
+        pdf.rect(margin + label_width, y - row_height, content_width - label_width, row_height, stroke=0, fill=1)
+        pdf.setStrokeColorRGB(0, 0, 0)
+        pdf.rect(margin, y - row_height, content_width, row_height, stroke=1, fill=0)
+        pdf.line(margin + label_width, y - row_height, margin + label_width, y)
+        pdf.setFillColorRGB(0, 0, 0)
+        pdf.setFont("Helvetica-Bold", 7)
+        pdf.drawString(margin + 1.5 * mm, y - 3.3 * mm, label)
+        pdf.setFont("Helvetica", 9)
+        value_lines = _wrap_text(value or "-", "Helvetica", 9, content_width - label_width - 4 * mm)
+        text = pdf.beginText(margin + label_width + 2 * mm, y - 3.5 * mm)
+        text.setLeading(3.6 * mm)
+        for line in value_lines[:2]:
             text.textLine(line)
         pdf.drawText(text)
-        y -= max(8 * mm, (len(str(value).splitlines()) + 1) * 5 * mm)
+        return y - row_height
+
+    pdf.setFont("Helvetica-Bold", 18)
+    pdf.drawString(margin, height - 18 * mm, "Rückforderungsbeleg")
+    pdf.setFont("Helvetica", 7)
+    barcode_size = 9 * mm
+    barcode_x = width - margin - barcode_size
+    barcode_y = height - 23 * mm
+    header_right = barcode_x - 4 * mm
+    pdf.drawRightString(header_right, height - 16 * mm, f"Release 5.0 / General / {request.language}")
+    pdf.line(width - 65 * mm, height - 18 * mm, header_right, height - 18 * mm)
+    pdf.drawRightString(header_right, height - 22 * mm, "Der Versicherung zustellen")
+    pdf.drawImage(
+        ImageReader(_page_control_datamatrix(build_page_control_payload(request, 1))),
+        barcode_x,
+        barcode_y,
+        width=barcode_size,
+        height=barcode_size,
+        mask="auto",
+    )
+
+    y = height - 30 * mm
+    y = draw_row(y, "Dokument", f"Rechnungsnummer {request.invoice_number}")
+    y = draw_row(y, "Rechnungssteller", request.provider_name)
+    y = draw_row(y, "Patient", request.insured_person)
+
+    y -= 5 * mm
+    pdf.setFont("Helvetica-Bold", 9)
+    pdf.drawString(margin, y, "Rechnungsangaben")
+    y -= 2 * mm
+    y = draw_row(y, "Versicherung", request.insurer_name)
+    y = draw_row(y, "Behandlung", request.treatment_period)
+    y = draw_row(y, "Leistungserbringer", request.provider_name)
+
+    y -= 5 * mm
+    pdf.setFont("Helvetica-Bold", 9)
+    pdf.drawString(margin, y, "Bemerkung")
+    y -= 2 * mm
+    notes_height = 25 * mm
+    pdf.setFillColorRGB(*green)
+    pdf.rect(margin, y - notes_height, content_width, notes_height, stroke=0, fill=1)
+    pdf.setStrokeColorRGB(0, 0, 0)
+    pdf.rect(margin, y - notes_height, content_width, notes_height, stroke=1, fill=0)
+    pdf.setFillColorRGB(0, 0, 0)
+    pdf.setFont("Helvetica", 8)
+    text = pdf.beginText(margin + 2 * mm, y - 4 * mm)
+    text.setLeading(3.5 * mm)
+    for line in _wrap_text(request.notes or "-", "Helvetica", 8, content_width - 4 * mm)[:6]:
+        text.textLine(line)
+    pdf.drawText(text)
+    y -= notes_height + 9 * mm
+
+    pdf.setFont("Helvetica-Bold", 9)
+    pdf.drawString(margin, y, "Leistungsübersicht")
+    y -= 2 * mm
+    table_height = 17 * mm
+    columns = [
+        ("Behandlung", 58 * mm),
+        ("Rechnungsnummer", 54 * mm),
+        ("Währung", 28 * mm),
+        ("Betrag", content_width - 140 * mm),
+    ]
+    x = margin
+    pdf.setFillColorRGB(*green)
+    pdf.rect(margin, y - 6 * mm, content_width, 6 * mm, stroke=0, fill=1)
+    pdf.setFillColorRGB(0, 0, 0)
+    for heading, column_width in columns:
+        pdf.setFont("Helvetica-Bold", 7)
+        pdf.drawString(x + 1.5 * mm, y - 4 * mm, heading)
+        pdf.line(x, y - table_height, x, y)
+        x += column_width
+    pdf.line(margin + content_width, y - table_height, margin + content_width, y)
+    pdf.rect(margin, y - table_height, content_width, table_height, stroke=1, fill=0)
+    pdf.line(margin, y - 6 * mm, margin + content_width, y - 6 * mm)
+
+    pdf.setFont("Helvetica", 9)
+    x = margin
+    values = [
+        request.treatment_period,
+        request.invoice_number,
+        request.currency,
+        f"{request.amount:.2f}",
+    ]
+    for (heading, column_width), value in zip(columns, values, strict=True):
+        if heading == "Betrag":
+            pdf.drawRightString(x + column_width - 2 * mm, y - 12 * mm, value)
+        else:
+            clipped = _wrap_text(value, "Helvetica", 9, column_width - 3 * mm)[0]
+            pdf.drawString(x + 1.5 * mm, y - 12 * mm, clipped)
+        x += column_width
+
+    total_y = 28 * mm
+    total_label_x = width - margin - 63 * mm
+    pdf.setFillColorRGB(*green)
+    pdf.rect(total_label_x, total_y, 37 * mm, 8 * mm, stroke=0, fill=1)
+    pdf.rect(total_label_x + 39 * mm, total_y, 24 * mm, 8 * mm, stroke=0, fill=1)
+    pdf.setFillColorRGB(0, 0, 0)
+    pdf.setStrokeColorRGB(0, 0, 0)
+    pdf.rect(total_label_x, total_y, 37 * mm, 8 * mm, stroke=1, fill=0)
+    pdf.rect(total_label_x + 39 * mm, total_y, 24 * mm, 8 * mm, stroke=1, fill=0)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(total_label_x + 1.5 * mm, total_y + 2.5 * mm, "Rechnungsbetrag:")
+    pdf.drawRightString(
+        total_label_x + 61.5 * mm,
+        total_y + 2.5 * mm,
+        f"{request.amount:.2f}",
+    )
+    pdf.setFont("Helvetica", 7)
+    pdf.drawString(margin, total_y + 2.5 * mm, f"Währung: {request.currency}")
 
     pdf.showPage()
     pdf.save()

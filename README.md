@@ -43,7 +43,10 @@ Interactive API documentation is available at `/docs`.
 
 ## Reference documentation
 
-The repository includes the [Swiss Implementation Guidelines for the QR-bill, version 2.3](docs/ig-qr-bill-v2.3-en.pdf), which defines the QR payload and provides the schematic payment-part example used by this application.
+The repository includes these official references:
+
+- [Swiss Implementation Guidelines for the QR-bill, version 2.3](docs/ig-qr-bill-v2.3-en.pdf), which defines the QR payload and provides the schematic payment-part example used by this application.
+- [General Invoice Request 5.0 detailed print template](docs/printTemplates_GIReq500_DetailG.pdf) from the [Forum Datenaustausch invoice standard](https://www.forum-datenaustausch.ch/xml-standards/rechnung), which provides the visual reference for the Rückforderungsbeleg.
 
 ## Tests
 

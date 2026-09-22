@@ -1,5 +1,6 @@
 from decimal import Decimal
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -100,6 +101,9 @@ class ReimbursementSlipRequest(BaseModel):
     amount: Decimal = Field(..., gt=Decimal("0"))
     currency: Literal["CHF", "EUR"] = "CHF"
     notes: str = Field("", max_length=500)
+    document_guid: str = Field(default_factory=lambda: uuid4().hex, pattern=r"^[0-9A-Fa-f]{32}$")
+    language: Literal["de", "fr", "it"] = "de"
+    tiers: Literal["G", "P", "S"] = "G"
 
 
 class XmlAttachmentRequest(BaseModel):
