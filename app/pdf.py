@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+import base64
+from datetime import date, datetime, time
 from io import BytesIO
-from math import ceil
 from typing import Iterable
+from xml.etree import ElementTree
+import zlib
 
 import qrcode
-import segno
 from PIL import ImageDraw
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import A4
@@ -14,23 +15,33 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
-from pystrich.datamatrix import DataMatrixData, DataMatrixEncoder
-from pystrich.datamatrix.placement import DataMatrixPlacer
-from pystrich.datamatrix.textencoder import TextEncoder, _SQUARE_SPECS
 
-from app.models import Party, QrBillRequest, ReimbursementSlipRequest, XmlAttachmentRequest, is_qr_iban
-from app.xml_attachment import (
-    MAX_QR_PAYLOAD_SIZE,
-    SWISS_TIMEZONE,
-    encode_xml_attachment,
-    extract_xml_attachment_metadata,
+from app.invoice_xml import create_tarif595_xml
+from app.models import (
+    Party,
+    QrBillRequest,
+    ReimbursementSlipRequest,
+    Tarif595Request,
+    XmlAttachmentRequest,
+    is_qr_iban,
 )
 
 
-def _qr_image(payload: str, *, swiss_cross: bool = False) -> ImageReader:
-    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=4, box_size=8)
-    qr.add_data(payload)
-    qr.make(fit=True)
+def _qr_image(
+    payload: str,
+    *,
+    swiss_cross: bool = False,
+    error_correction: int = qrcode.constants.ERROR_CORRECT_M,
+    version: int | None = None,
+) -> ImageReader:
+    qr = qrcode.QRCode(
+        version=version,
+        error_correction=error_correction,
+        border=4,
+        box_size=8,
+    )
+    qr.add_data(payload, optimize=0)
+    qr.make(fit=version is None)
     image = qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
     if swiss_cross:
@@ -168,41 +179,13 @@ def _text_block(pdf: canvas.Canvas, x: float, y: float, title: str, lines: Itera
     return current_y
 
 
-class _PageControlTextEncoder(TextEncoder):
-    def _select_spec(self, unpadded_len: int, symbol_shape: str):
-        selected = super()._select_spec(unpadded_len, symbol_shape)
-        required = next(
-            spec
-            for spec in _SQUARE_SPECS
-            if (spec.region_cols + 2) * spec.h_regions == 24
-        )
-        return required if selected.data_words < required.data_words else selected
-
-
-class _PageControlDataMatrix(DataMatrixEncoder):
-    def __init__(self, payload: str) -> None:
-        encoder = _PageControlTextEncoder()
-        codewords = encoder.encode(
-            DataMatrixData(payload, encoding="ascii"),
-            symbol_shape="square",
-        )
-        self.width = 0
-        self.height = 0
-        self.regions = (encoder.spec.h_regions, encoder.spec.v_regions)
-        self.quiet_zone = 0
-        self.matrix = [[None] * encoder.mapping_cols for _ in range(encoder.mapping_rows)]
-        DataMatrixPlacer().place(codewords, self.matrix)
-
-
-def build_page_control_payload(request: ReimbursementSlipRequest, page_number: int) -> str:
-    return f"FD50{request.document_guid}{request.language}{request.tiers}GR{page_number:02d}"
-
-
-def _page_control_datamatrix(payload: str):
-    image = _PageControlDataMatrix(payload).get_pilimage(cellsize=10)
-    if image.size != (240, 240):
-        raise ValueError("Page control Data Matrix must contain exactly 24x24 modules.")
-    return image
+def _wrap_preview_lines(value: str, width: int, max_lines: int) -> list[str]:
+    wrapped: list[str] = []
+    for raw_line in value.splitlines() or [""]:
+        wrapped.extend(raw_line[index : index + width] for index in range(0, len(raw_line), width) or [0])
+        if len(wrapped) >= max_lines:
+            return wrapped[:max_lines]
+    return wrapped[:max_lines]
 
 
 def build_swiss_qr_payload(request: QrBillRequest) -> str:
@@ -240,6 +223,99 @@ def build_swiss_qr_payload(request: QrBillRequest) -> str:
     )
 
 
+def _draw_invoice(pdf: canvas.Canvas, request: QrBillRequest, height: float) -> None:
+    left = 20 * mm
+    right = 190 * mm
+    content_width = right - left
+    invoice_date = request.invoice_date or date.today()
+    invoice_number = request.invoice_number or request.reference or "Invoice"
+    description = request.service_description or request.message or "Service"
+    unit_price = request.service_unit_price
+    if unit_price is None and request.amount is not None:
+        unit_price = request.amount / request.service_quantity
+
+    pdf.setFillColorRGB(0, 0, 0)
+    pdf.setFont("Helvetica-Bold", 15)
+    pdf.drawString(left, height - 20 * mm, request.creditor.name)
+    pdf.setFont("Helvetica", 9)
+    company_y = height - 26 * mm
+    for line in (
+        f"{request.creditor.street} {request.creditor.house_number}".strip(),
+        f"{request.creditor.postal_code} {request.creditor.city}",
+        request.creditor.country_code,
+    ):
+        pdf.drawString(left, company_y, line)
+        company_y -= 4.5 * mm
+
+    pdf.setFont("Helvetica-Bold", 24)
+    pdf.drawRightString(right, height - 20 * mm, "INVOICE")
+    pdf.setFont("Helvetica", 9)
+    pdf.drawRightString(right, height - 28 * mm, f"Invoice no. {invoice_number}")
+    pdf.drawRightString(right, height - 33 * mm, f"Date {invoice_date.strftime('%d.%m.%Y')}")
+
+    address_y = height - 60 * mm
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.setFillColorRGB(0.35, 0.39, 0.44)
+    pdf.drawString(left, address_y, "BILL TO")
+    pdf.setFillColorRGB(0, 0, 0)
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(left, address_y - 6 * mm, request.debtor.name)
+    pdf.setFont("Helvetica", 9)
+    client_y = address_y - 11 * mm
+    for line in (
+        f"{request.debtor.street} {request.debtor.house_number}".strip(),
+        f"{request.debtor.postal_code} {request.debtor.city}",
+        request.debtor.country_code,
+    ):
+        pdf.drawString(left, client_y, line)
+        client_y -= 4.5 * mm
+
+    table_top = height - 100 * mm
+    row_height = 9 * mm
+    columns = [left, 105 * mm, 140 * mm, 160 * mm, right]
+    pdf.setFillColorRGB(0.94, 0.95, 0.96)
+    pdf.rect(left, table_top - row_height, content_width, row_height, stroke=0, fill=1)
+    pdf.setFillColorRGB(0, 0, 0)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawString(columns[0] + 2 * mm, table_top - 5.8 * mm, "DESCRIPTION")
+    pdf.drawString(columns[1] + 2 * mm, table_top - 5.8 * mm, "PERIOD")
+    pdf.drawRightString(columns[3] - 2 * mm, table_top - 5.8 * mm, "QTY")
+    pdf.drawRightString(columns[4] - 24 * mm, table_top - 5.8 * mm, "UNIT PRICE")
+    pdf.drawRightString(columns[4] - 2 * mm, table_top - 5.8 * mm, "AMOUNT")
+
+    row_y = table_top - row_height
+    pdf.setStrokeColorRGB(0.82, 0.85, 0.88)
+    pdf.line(left, row_y - row_height, right, row_y - row_height)
+    pdf.setFont("Helvetica", 9)
+    description_lines = _wrap_text(description, "Helvetica", 9, 80 * mm)
+    pdf.drawString(columns[0] + 2 * mm, row_y - 5.8 * mm, description_lines[0])
+    period = ""
+    if request.service_date_begin and request.service_date_end:
+        period = (
+            f"{request.service_date_begin.strftime('%d.%m.%Y')} - "
+            f"{request.service_date_end.strftime('%d.%m.%Y')}"
+        )
+    pdf.drawString(columns[1] + 2 * mm, row_y - 5.8 * mm, period)
+    pdf.drawRightString(columns[3] - 2 * mm, row_y - 5.8 * mm, f"{request.service_quantity:g}")
+    if unit_price is not None:
+        pdf.drawRightString(columns[4] - 24 * mm, row_y - 5.8 * mm, f"{unit_price:.2f}")
+    if request.amount is not None:
+        pdf.drawRightString(columns[4] - 2 * mm, row_y - 5.8 * mm, f"{request.amount:.2f}")
+
+    total_y = row_y - 19 * mm
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawRightString(right - 35 * mm, total_y, "Total")
+    total = f"{request.currency} {request.amount:.2f}" if request.amount is not None else "Open amount"
+    pdf.drawRightString(right, total_y, total)
+    pdf.setLineWidth(1)
+    pdf.line(right - 76 * mm, total_y - 3 * mm, right, total_y - 3 * mm)
+
+    if request.message:
+        pdf.setFont("Helvetica", 8)
+        pdf.setFillColorRGB(0.35, 0.39, 0.44)
+        pdf.drawString(left, total_y, request.message)
+
+
 def create_qr_bill_pdf(request: QrBillRequest) -> bytes:
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
@@ -251,6 +327,7 @@ def create_qr_bill_pdf(request: QrBillRequest) -> bytes:
     details_x = 118 * mm
 
     pdf.setTitle("Swiss QR bill")
+    _draw_invoice(pdf, request, height)
     pdf.setStrokeColorRGB(0.35, 0.35, 0.35)
     pdf.setDash(1, 2)
     pdf.line(0, section_height, A4[0], section_height)
@@ -382,138 +459,31 @@ def create_reimbursement_slip_pdf(request: ReimbursementSlipRequest) -> bytes:
     width, height = A4
 
     pdf.setTitle("Rückforderungsbeleg")
-    margin = 12 * mm
-    content_width = width - 2 * margin
-    label_width = 42 * mm
-    green = (0.9, 1, 0.9)
+    pdf.setFont("Helvetica-Bold", 18)
+    pdf.drawString(20 * mm, height - 20 * mm, "Rückforderungsbeleg")
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(20 * mm, height - 28 * mm, "Human-readable reimbursement slip for Tarif 595 invoices.")
 
-    def draw_row(y: float, label: str, value: str, *, row_height: float = 8 * mm) -> float:
-        pdf.setFillColorRGB(*green)
-        pdf.rect(margin, y - row_height, label_width, row_height, stroke=0, fill=1)
-        pdf.setFillColorRGB(1, 1, 1)
-        pdf.rect(margin + label_width, y - row_height, content_width - label_width, row_height, stroke=0, fill=1)
-        pdf.setStrokeColorRGB(0, 0, 0)
-        pdf.rect(margin, y - row_height, content_width, row_height, stroke=1, fill=0)
-        pdf.line(margin + label_width, y - row_height, margin + label_width, y)
-        pdf.setFillColorRGB(0, 0, 0)
-        pdf.setFont("Helvetica-Bold", 7)
-        pdf.drawString(margin + 1.5 * mm, y - 3.3 * mm, label)
-        pdf.setFont("Helvetica", 9)
-        value_lines = _wrap_text(value or "-", "Helvetica", 9, content_width - label_width - 4 * mm)
-        text = pdf.beginText(margin + label_width + 2 * mm, y - 3.5 * mm)
-        text.setLeading(3.6 * mm)
-        for line in value_lines[:2]:
+    y = height - 45 * mm
+    fields = [
+        ("Leistungserbringer", request.provider_name),
+        ("Versicherung", request.insurer_name),
+        ("Versicherte Person", request.insured_person),
+        ("Rechnungsnummer", request.invoice_number),
+        ("Behandlungsperiode", request.treatment_period),
+        ("Betrag", f"{request.amount:.2f} {request.currency}"),
+        ("Notizen", request.notes or "-"),
+    ]
+
+    for label, value in fields:
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(20 * mm, y, label)
+        pdf.setFont("Helvetica", 10)
+        text = pdf.beginText(70 * mm, y)
+        for line in str(value).splitlines() or ["-"]:
             text.textLine(line)
         pdf.drawText(text)
-        return y - row_height
-
-    pdf.setFont("Helvetica-Bold", 18)
-    pdf.drawString(margin, height - 18 * mm, "Rückforderungsbeleg")
-    pdf.setFont("Helvetica", 7)
-    barcode_size = 9 * mm
-    barcode_x = width - margin - barcode_size
-    barcode_y = height - 23 * mm
-    header_right = barcode_x - 4 * mm
-    pdf.drawRightString(header_right, height - 16 * mm, f"Release 5.0 / General / {request.language}")
-    pdf.line(width - 65 * mm, height - 18 * mm, header_right, height - 18 * mm)
-    pdf.drawRightString(header_right, height - 22 * mm, "Der Versicherung zustellen")
-    pdf.drawImage(
-        ImageReader(_page_control_datamatrix(build_page_control_payload(request, 1))),
-        barcode_x,
-        barcode_y,
-        width=barcode_size,
-        height=barcode_size,
-        mask="auto",
-    )
-
-    y = height - 30 * mm
-    y = draw_row(y, "Dokument", f"Rechnungsnummer {request.invoice_number}")
-    y = draw_row(y, "Rechnungssteller", request.provider_name)
-    y = draw_row(y, "Patient", request.insured_person)
-
-    y -= 5 * mm
-    pdf.setFont("Helvetica-Bold", 9)
-    pdf.drawString(margin, y, "Rechnungsangaben")
-    y -= 2 * mm
-    y = draw_row(y, "Versicherung", request.insurer_name)
-    y = draw_row(y, "Behandlung", request.treatment_period)
-    y = draw_row(y, "Leistungserbringer", request.provider_name)
-
-    y -= 5 * mm
-    pdf.setFont("Helvetica-Bold", 9)
-    pdf.drawString(margin, y, "Bemerkung")
-    y -= 2 * mm
-    notes_height = 25 * mm
-    pdf.setFillColorRGB(*green)
-    pdf.rect(margin, y - notes_height, content_width, notes_height, stroke=0, fill=1)
-    pdf.setStrokeColorRGB(0, 0, 0)
-    pdf.rect(margin, y - notes_height, content_width, notes_height, stroke=1, fill=0)
-    pdf.setFillColorRGB(0, 0, 0)
-    pdf.setFont("Helvetica", 8)
-    text = pdf.beginText(margin + 2 * mm, y - 4 * mm)
-    text.setLeading(3.5 * mm)
-    for line in _wrap_text(request.notes or "-", "Helvetica", 8, content_width - 4 * mm)[:6]:
-        text.textLine(line)
-    pdf.drawText(text)
-    y -= notes_height + 9 * mm
-
-    pdf.setFont("Helvetica-Bold", 9)
-    pdf.drawString(margin, y, "Leistungsübersicht")
-    y -= 2 * mm
-    table_height = 17 * mm
-    columns = [
-        ("Behandlung", 58 * mm),
-        ("Rechnungsnummer", 54 * mm),
-        ("Währung", 28 * mm),
-        ("Betrag", content_width - 140 * mm),
-    ]
-    x = margin
-    pdf.setFillColorRGB(*green)
-    pdf.rect(margin, y - 6 * mm, content_width, 6 * mm, stroke=0, fill=1)
-    pdf.setFillColorRGB(0, 0, 0)
-    for heading, column_width in columns:
-        pdf.setFont("Helvetica-Bold", 7)
-        pdf.drawString(x + 1.5 * mm, y - 4 * mm, heading)
-        pdf.line(x, y - table_height, x, y)
-        x += column_width
-    pdf.line(margin + content_width, y - table_height, margin + content_width, y)
-    pdf.rect(margin, y - table_height, content_width, table_height, stroke=1, fill=0)
-    pdf.line(margin, y - 6 * mm, margin + content_width, y - 6 * mm)
-
-    pdf.setFont("Helvetica", 9)
-    x = margin
-    values = [
-        request.treatment_period,
-        request.invoice_number,
-        request.currency,
-        f"{request.amount:.2f}",
-    ]
-    for (heading, column_width), value in zip(columns, values, strict=True):
-        if heading == "Betrag":
-            pdf.drawRightString(x + column_width - 2 * mm, y - 12 * mm, value)
-        else:
-            clipped = _wrap_text(value, "Helvetica", 9, column_width - 3 * mm)[0]
-            pdf.drawString(x + 1.5 * mm, y - 12 * mm, clipped)
-        x += column_width
-
-    total_y = 28 * mm
-    total_label_x = width - margin - 63 * mm
-    pdf.setFillColorRGB(*green)
-    pdf.rect(total_label_x, total_y, 37 * mm, 8 * mm, stroke=0, fill=1)
-    pdf.rect(total_label_x + 39 * mm, total_y, 24 * mm, 8 * mm, stroke=0, fill=1)
-    pdf.setFillColorRGB(0, 0, 0)
-    pdf.setStrokeColorRGB(0, 0, 0)
-    pdf.rect(total_label_x, total_y, 37 * mm, 8 * mm, stroke=1, fill=0)
-    pdf.rect(total_label_x + 39 * mm, total_y, 24 * mm, 8 * mm, stroke=1, fill=0)
-    pdf.setFont("Helvetica-Bold", 8)
-    pdf.drawString(total_label_x + 1.5 * mm, total_y + 2.5 * mm, "Rechnungsbetrag:")
-    pdf.drawRightString(
-        total_label_x + 61.5 * mm,
-        total_y + 2.5 * mm,
-        f"{request.amount:.2f}",
-    )
-    pdf.setFont("Helvetica", 7)
-    pdf.drawString(margin, total_y + 2.5 * mm, f"Währung: {request.currency}")
+        y -= max(8 * mm, (len(str(value).splitlines()) + 1) * 5 * mm)
 
     pdf.showPage()
     pdf.save()
@@ -521,87 +491,38 @@ def create_reimbursement_slip_pdf(request: ReimbursementSlipRequest) -> bytes:
 
 
 def create_xml_attachment_pdf(request: XmlAttachmentRequest) -> bytes:
-    metadata = extract_xml_attachment_metadata(request.xml_content)
-    encoded_xml = encode_xml_attachment(request.xml_content)
-    symbol_count = max(1, ceil(len(encoded_xml) / MAX_QR_PAYLOAD_SIZE))
-    qr_codes = segno.make_sequence(
-        encoded_xml,
-        error="L",
-        mode="byte",
-        boost_error=False,
-        symbol_count=symbol_count,
-    )
-
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-    pdf.setTitle("Rückforderungsbeleg QR-Code Blatt")
 
-    page_size = 6
-    page_count = ceil(len(qr_codes) / page_size)
-    generated_at = datetime.now(SWISS_TIMEZONE)
-    for page_index in range(page_count):
-        pdf.setFont("Helvetica-Bold", 16)
-        pdf.drawString(14 * mm, height - 18 * mm, "Rückforderungsbeleg QR-Code Blatt")
-        pdf.setFont("Helvetica", 7)
-        pdf.drawRightString(
-            width - 27 * mm,
-            height - 14 * mm,
-            f"Release 5.0/Annex/{metadata.language}",
-        )
-        pdf.drawRightString(width - 27 * mm, height - 20 * mm, "Der Versicherung zustellen")
-        pdf.drawImage(
-            ImageReader(
-                _page_control_datamatrix(
-                    f"FD50{metadata.guid}{metadata.language}{metadata.tiers}AR{page_index + 1:02d}"
-                )
-            ),
-            width - 23 * mm,
-            height - 23 * mm,
-            width=10 * mm,
-            height=10 * mm,
-            mask="auto",
-        )
+    pdf.setTitle(request.title)
+    chunks = [
+        request.xml_content[index : index + 1800]
+        for index in range(0, len(request.xml_content), 1800)
+    ]
+    for page_start in range(0, len(chunks), 4):
+        pdf.setFont("Helvetica-Bold", 18)
+        pdf.drawString(20 * mm, height - 20 * mm, request.title)
+        pdf.setFont("Helvetica", 10)
+        pdf.drawString(20 * mm, height - 28 * mm, f"Embedded XML filename: {request.filename}")
+        pdf.drawString(20 * mm, height - 34 * mm, "Scan the QR codes in numerical order or extract the embedded XML file.")
 
-        pdf.setFont("Helvetica-Bold", 7)
-        pdf.drawString(14 * mm, height - 29 * mm, "Identifikation:")
-        pdf.setFont("Helvetica", 7)
-        identification = (
-            f"{metadata.request_id} / "
-            f"{metadata.request_date.strftime('%d.%m.%Y %H:%M:%S')} / "
-            f"{metadata.guid}"
-        )
-        pdf.drawString(33 * mm, height - 29 * mm, identification)
-        pdf.setFont("Helvetica-Bold", 7)
-        pdf.drawString(14 * mm, height - 34 * mm, "PatientIn:")
-        pdf.setFont("Helvetica", 7)
-        pdf.drawString(33 * mm, height - 34 * mm, metadata.patient[:155])
-        pdf.line(14 * mm, height - 36 * mm, width - 14 * mm, height - 36 * mm)
-
-        for position, qr_code in enumerate(qr_codes[page_index * page_size : (page_index + 1) * page_size]):
-            row, column = divmod(position, 3)
-            qr_buffer = BytesIO()
-            qr_code.save(qr_buffer, kind="png", scale=5, border=4)
-            qr_buffer.seek(0)
-            qr_size = 52 * mm
-            x = 14 * mm + column * 63 * mm
-            y = height - 91 * mm - row * 64 * mm
-            pdf.drawImage(ImageReader(qr_buffer), x, y, width=qr_size, height=qr_size, mask="auto")
-            pdf.setFont("Helvetica-Bold", 7)
-            pdf.drawCentredString(x + qr_size / 2, y - 4 * mm, f"QR-Code {page_index * page_size + position + 1}")
-
-        pdf.line(14 * mm, 14 * mm, width - 14 * mm, 14 * mm)
-        pdf.setFont("Helvetica", 7)
-        pdf.drawString(
-            14 * mm,
-            10 * mm,
-            f"Rückforderungsbeleg QR-Code Blatt, generiert am {generated_at.strftime('%d.%m.%Y %H:%M:%S')}",
-        )
-        pdf.drawRightString(
-            width - 14 * mm,
-            10 * mm,
-            f"Seite {page_index + 1} / {page_count}",
-        )
+        for position, chunk in enumerate(chunks[page_start : page_start + 4]):
+            chunk_number = page_start + position + 1
+            payload = f"TARIF595:{chunk_number}/{len(chunks)}:{chunk}"
+            column = position % 2
+            row = position // 2
+            x = (20 + column * 95) * mm
+            y = height - (120 + row * 120) * mm
+            pdf.drawImage(
+                _qr_image(payload, error_correction=qrcode.constants.ERROR_CORRECT_L),
+                x,
+                y,
+                width=75 * mm,
+                height=75 * mm,
+            )
+            pdf.setFont("Helvetica-Bold", 9)
+            pdf.drawCentredString(x + 37.5 * mm, y - 5 * mm, f"XML part {chunk_number} of {len(chunks)}")
         pdf.showPage()
 
     pdf.save()
@@ -615,18 +536,363 @@ def create_xml_attachment_pdf(request: XmlAttachmentRequest) -> bytes:
     return output.getvalue()
 
 
-def create_combined_pdf(
-    qr_bill: bytes,
-    reimbursement_slip: bytes,
-    xml_attachment: bytes,
-    *,
-    xml_filename: str,
-    xml_content: str,
+def create_tarif595_human_pdf(request: Tarif595Request) -> bytes:
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    left = 10 * mm
+    right = width - 10 * mm
+    label_x = left + 18 * mm
+    value_x = left + 45 * mm
+    line_height = 4.2 * mm
+
+    def date_text(value: date) -> str:
+        return value.strftime("%d.%m.%Y")
+
+    def row(
+        y: float,
+        label: str,
+        value: str,
+        *,
+        section: str = "",
+        second_label: str = "",
+        second_value: str = "",
+    ) -> float:
+        pdf.setFont("Helvetica-Bold", 6.5)
+        if section:
+            section_lines = {
+                "Rechnungssteller": ("Rechnungs-", "steller"),
+                "Leistungserbringer": ("Leistungs-", "erbringer"),
+            }.get(section, (section,))
+            for index, section_line in enumerate(section_lines):
+                pdf.drawString(left, y - index * 3 * mm, section_line)
+        pdf.setFont("Helvetica", 6.5)
+        pdf.drawString(label_x, y, label)
+        pdf.setFont("Helvetica-Bold", 7)
+        pdf.drawString(value_x, y, value)
+        if second_label:
+            pdf.setFont("Helvetica", 6.5)
+            pdf.drawString(116 * mm, y, second_label)
+            pdf.setFont("Helvetica-Bold", 7)
+            pdf.drawString(148 * mm, y, second_value)
+        return y - line_height
+
+    pdf.setTitle("Rückforderungsbeleg")
+    pdf.setFillColorRGB(0, 0, 0)
+    pdf.setStrokeColorRGB(0, 0, 0)
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(left, height - 12 * mm, "Rückforderungsbeleg")
+    pdf.setFont("Helvetica", 7)
+    pdf.drawRightString(right, height - 10 * mm, "Release 5.0/General/de")
+    pdf.drawRightString(right, height - 15 * mm, "Der Versicherung zustellen")
+    pdf.drawImage(
+        _qr_image(f"{request.invoice_number}|{request.provider_gln}|{request.service.amount:.2f}"),
+        right - 12 * mm,
+        height - 28 * mm,
+        width=10 * mm,
+        height=10 * mm,
+    )
+
+    y = height - 31 * mm
+    pdf.setLineWidth(0.45)
+    pdf.rect(left, y - 14 * mm, right - left, 14 * mm, stroke=1, fill=0)
+    y = row(
+        y - 3.7 * mm,
+        "Identifikation",
+        f"{int(datetime.combine(request.invoice_date, time.min).timestamp())} / "
+        f"{date_text(request.invoice_date)} / {request.invoice_number}",
+        section="Dokument",
+        second_label="Seite",
+        second_value="1",
+    )
+    y = row(
+        y,
+        "GLN-Nr.(B)",
+        f"{request.provider_gln}  {request.qr_bill.creditor.name}",
+        section="Rechnungssteller",
+    )
+    y = row(
+        y,
+        "ZSR-Nr.(B)",
+        request.provider_zsr or "",
+    )
+
+    y -= 2 * mm
+    patient_top = y + 2 * mm
+    y = row(y, "Name", request.patient.family_name, section="Patient")
+    y = row(y, "Vorname", request.patient.given_name)
+    y = row(y, "Strasse", f"{request.patient.street} {request.patient.house_number}".strip())
+    y = row(y, "PLZ", request.patient.postal_code)
+    y = row(y, "Ort", request.patient.city)
+    y = row(y, "Geburtsdatum", date_text(request.patient.birthdate))
+    gender_text = "Herr / M" if request.patient.gender == "male" else "Frau / F"
+    y = row(y, "Geschlecht", gender_text)
+    y = row(y, "Falldatum", date_text(request.service.date_end))
+    y = row(y, "Fall-Nr.", "")
+    y = row(y, "AHV-Nr.", request.patient.ssn)
+    y = row(y, "VEKA-Nr.", "")
+    y = row(y, "Versicherten-Nr.", "")
+    y = row(y, "Kanton", request.canton)
+    y = row(y, "Kopie", "nein")
+    y = row(
+        y,
+        "Vergütungsart",
+        "TG",
+        second_label="Rechnungs-Datum/-Nr.",
+        second_value=f"{date_text(request.invoice_date)} / {request.invoice_number}",
+    )
+    y = row(y, "Gesetz", "VVG")
+    y = row(
+        y,
+        "Behandlung",
+        f"{date_text(request.service.date_begin)} - {date_text(request.service.date_end)}",
+    )
+    y = row(y, "Behandlungsart", "ambulant")
+    y = row(y, "Behandlungsgrund", "Prävention")
+    y = row(y, "Rolle/Ort", f"Andere · Betrieb · {request.qr_bill.creditor.name}")
+
+    address_x = 116 * mm
+    address_y = patient_top - 20 * mm
+    pdf.setFont("Helvetica", 7.5)
+    for line in (
+        f"{request.patient.given_name} {request.patient.family_name}",
+        f"{request.patient.street} {request.patient.house_number}".strip(),
+        f"{request.patient.postal_code} {request.patient.city}",
+    ):
+        pdf.drawString(address_x, address_y, line)
+        address_y -= 4.3 * mm
+
+    provider_top = y + 1 * mm
+    pdf.line(left, provider_top, right, provider_top)
+    y = row(
+        y - 2.5 * mm,
+        "GLN-Nr.(P)",
+        f"{request.provider_gln}  {request.qr_bill.creditor.name}",
+        section="Leistungserbringer",
+    )
+    y = row(
+        y,
+        "GLN-Nr.(L)",
+        f"{request.provider_location_gln}  "
+        f"{request.qr_bill.creditor.street} {request.qr_bill.creditor.house_number} · "
+        f"{request.qr_bill.creditor.postal_code} {request.qr_bill.creditor.city}",
+    )
+    y = row(y, "ZSR-Nr.(P)", request.provider_zsr or "")
+    pdf.line(left, y + 1.5 * mm, right, y + 1.5 * mm)
+    y = row(y - 1.5 * mm, "", "", section="Diagnose")
+
+    notes_top = y + 1.5 * mm
+    notes_height = 15 * mm
+    pdf.rect(left, notes_top - notes_height, right - left, notes_height, stroke=1, fill=0)
+    pdf.setFont("Helvetica-Bold", 6.5)
+    pdf.drawString(left + 1 * mm, notes_top - 3.5 * mm, "Bemerkung")
+    pdf.setFont("Helvetica", 6.5)
+    note_lines = _wrap_text(request.notes or "-", "Helvetica", 6.5, right - value_x - 2 * mm)
+    note_y = notes_top - 3.5 * mm
+    for line in note_lines[:3]:
+        pdf.drawString(value_x, note_y, line)
+        note_y -= 3.5 * mm
+    y = notes_top - notes_height - 5 * mm
+
+    pdf.setFont("Helvetica", 6.5)
+    pdf.drawString(left, y, "Partner")
+    pdf.drawString(value_x, y, "GLN-/ZSR-/Sektion-Nr.")
+    pdf.drawString(100 * mm, y, "Adresse")
+    y -= 3.5 * mm
+    pdf.setFont("Helvetica-Bold", 6.5)
+    pdf.drawString(left, y, "1 - Versicherung")
+    pdf.setFont("Helvetica", 6.5)
+    pdf.drawString(value_x, y, request.insurer_gln)
+    pdf.drawString(
+        100 * mm,
+        y,
+        f"{request.insurer.name} · {request.insurer.street} {request.insurer.house_number} · "
+        f"{request.insurer.postal_code} {request.insurer.city}",
+    )
+    y -= 8 * mm
+
+    column_x = {
+        "date": left,
+        "tariff": left + 17 * mm,
+        "code": left + 31 * mm,
+        "quantity": left + 105 * mm,
+        "price": left + 129 * mm,
+        "vat": left + 151 * mm,
+        "amount": right,
+    }
+    pdf.line(left, y + 2 * mm, right, y + 2 * mm)
+    pdf.setFont("Helvetica", 6.5)
+    pdf.drawString(column_x["date"], y, "Datum")
+    pdf.drawString(column_x["tariff"], y, "Tarif")
+    pdf.drawString(column_x["code"], y, "Tarifziffer / Leistung")
+    pdf.drawRightString(column_x["quantity"], y, "Anzahl")
+    pdf.drawRightString(column_x["price"], y, "Preis")
+    pdf.drawRightString(column_x["vat"], y, "MWSt.")
+    pdf.drawRightString(column_x["amount"], y, "Betrag")
+    y -= 4.5 * mm
+    pdf.setFont("Helvetica", 7)
+    pdf.drawString(column_x["date"], y, date_text(request.service.date_begin))
+    pdf.drawString(column_x["tariff"], y, "595")
+    pdf.drawString(column_x["code"], y, request.service.code)
+    pdf.drawRightString(column_x["quantity"], y, f"{request.service.quantity:g}")
+    pdf.drawRightString(column_x["price"], y, f"{request.service.unit_price:.2f}")
+    pdf.drawRightString(column_x["vat"], y, f"{request.service.vat_rate:.2f}")
+    pdf.drawRightString(column_x["amount"], y, f"{request.service.amount:.2f}")
+    y -= 4 * mm
+    pdf.setFont("Helvetica-Bold", 6.5)
+    for line in _wrap_text(request.service.name, "Helvetica-Bold", 6.5, 105 * mm)[:2]:
+        pdf.drawString(column_x["code"], y, line)
+        y -= 3.5 * mm
+
+    total_y = 22 * mm
+    pdf.line(130 * mm, total_y + 8 * mm, right, total_y + 8 * mm)
+    pdf.setFont("Helvetica", 6.5)
+    pdf.drawString(130 * mm, total_y + 3 * mm, "Code")
+    pdf.drawString(145 * mm, total_y + 3 * mm, "Satz")
+    pdf.drawString(160 * mm, total_y + 3 * mm, "Betrag")
+    pdf.drawString(179 * mm, total_y + 3 * mm, "MWSt.")
+    pdf.drawString(130 * mm, total_y - 1 * mm, "0")
+    pdf.drawString(145 * mm, total_y - 1 * mm, f"{request.service.vat_rate:.2f}")
+    pdf.drawString(160 * mm, total_y - 1 * mm, f"{request.service.amount:.2f}")
+    pdf.drawString(179 * mm, total_y - 1 * mm, "0.00")
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawRightString(right - 35 * mm, total_y - 8 * mm, "Gesamtbetrag:")
+    pdf.drawRightString(right, total_y - 8 * mm, f"{request.service.amount:.2f}")
+    pdf.drawRightString(right - 35 * mm, total_y - 14 * mm, "Rechnungsbetrag:")
+    pdf.drawRightString(right, total_y - 14 * mm, f"{request.service.amount:.2f}")
+    pdf.setFont("Helvetica", 6.5)
+    pdf.drawString(130 * mm, total_y - 8 * mm, "Währung: CHF")
+
+    pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()
+
+
+def build_annex_qr_payloads(xml_content: bytes) -> list[str]:
+    compressor = zlib.compressobj(level=9, wbits=-15)
+    compressed = compressor.compress(xml_content) + compressor.flush()
+    encoded = base64.b64encode(compressed).decode("ascii")
+    chunk_size = 1262
+    return [
+        encoded[index : index + chunk_size].ljust(chunk_size)
+        for index in range(0, len(encoded), chunk_size)
+    ]
+
+
+def _xml_filename(invoice_number: str) -> str:
+    stem = "".join(character if character.isalnum() or character in "._-" else "_" for character in invoice_number)
+    return f"{stem.strip('._') or 'invoice'}.xml"
+
+
+def create_tarif595_machine_pdf(
+    request: Tarif595Request,
+    xml_content: bytes | None = None,
 ) -> bytes:
+    content = xml_content or create_tarif595_xml(request)
+    payloads = build_annex_qr_payloads(content)
+    xml_root = ElementTree.fromstring(content)
+    invoice = xml_root.find(f".//{{{xml_root.tag.split('}')[0][1:]}}}invoice")
+    guid = xml_root.attrib["guid"]
+    timestamp = invoice.attrib["request_timestamp"] if invoice is not None else ""
+    generated_at = f"{request.invoice_date.strftime('%d.%m.%Y')} 00:00:00"
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    left = 15 * mm
+    right = width - 15 * mm
+    qr_size = 53 * mm
+    x_positions = [15 * mm, 78.5 * mm, 142 * mm]
+    y_positions = [height - 118 * mm, height - 188 * mm]
+
+    for page_start in range(0, len(payloads), 6):
+        page_number = page_start // 6 + 1
+        pdf.setFillColorRGB(0, 0, 0)
+        pdf.setStrokeColorRGB(0, 0, 0)
+        pdf.setFont("Helvetica-Bold", 16)
+        pdf.drawString(left, height - 12 * mm, "Rückforderungsbeleg QR-Code Blatt")
+        pdf.setFont("Helvetica", 7)
+        pdf.drawRightString(right - 14 * mm, height - 10 * mm, "Release 5.0/Annex/de")
+        pdf.drawRightString(right - 14 * mm, height - 15 * mm, "Der Versicherung zustellen")
+        pdf.drawImage(
+            _qr_image(f"{timestamp}|{request.invoice_number}|{guid}"),
+            right - 10 * mm,
+            height - 22 * mm,
+            width=10 * mm,
+            height=10 * mm,
+        )
+
+        info_y = height - 29 * mm
+        pdf.setFont("Helvetica", 7)
+        pdf.drawString(left, info_y, "Identifikation:")
+        pdf.setFont("Helvetica-Bold", 7)
+        pdf.drawString(left + 19 * mm, info_y, f"{timestamp} / {generated_at} / {guid}")
+        patient_text = (
+            f"{'Herr' if request.patient.gender == 'male' else 'Frau'} "
+            f"{request.patient.given_name} {request.patient.family_name} · "
+            f"{request.patient.street} {request.patient.house_number} · "
+            f"{request.patient.postal_code} {request.patient.city} · "
+            f"Geburtsdatum: {request.patient.birthdate.strftime('%d.%m.%Y')} · "
+            f"Geschlecht: {'Herr / M' if request.patient.gender == 'male' else 'Frau / F'}"
+        )
+        pdf.setFont("Helvetica", 7)
+        pdf.drawString(left, info_y - 5 * mm, "PatientIn:")
+        pdf.setFont("Helvetica-Bold", 7)
+        pdf.drawString(left + 19 * mm, info_y - 5 * mm, patient_text)
+        pdf.setLineWidth(0.45)
+        pdf.line(left, info_y - 7 * mm, right, info_y - 7 * mm)
+
+        for position, payload in enumerate(payloads[page_start : page_start + 6]):
+            code_number = page_start + position + 1
+            column = position % 3
+            row = position // 3
+            x = x_positions[column]
+            y = y_positions[row]
+            pdf.drawImage(
+                _qr_image(
+                    payload,
+                    error_correction=qrcode.constants.ERROR_CORRECT_M,
+                    version=29,
+                ),
+                x,
+                y,
+                width=qr_size,
+                height=qr_size,
+            )
+            pdf.setFont("Helvetica-Bold", 7)
+            pdf.drawCentredString(x + qr_size / 2, y - 5 * mm, f"QR-Code {code_number}")
+
+        footer_y = 11 * mm
+        pdf.line(left, footer_y + 3 * mm, right, footer_y + 3 * mm)
+        pdf.setFont("Helvetica", 7)
+        pdf.drawString(
+            left,
+            footer_y,
+            f"Rückforderungsbeleg QR-Code Blatt, generiert am {generated_at}",
+        )
+        pdf.drawRightString(right, footer_y, f"Seite {page_number}")
+        pdf.showPage()
+
+    pdf.save()
     writer = PdfWriter()
-    for document in (qr_bill, reimbursement_slip, xml_attachment):
-        writer.append(BytesIO(document))
-    writer.add_attachment(xml_filename, xml_content.encode("utf-8"))
+    writer.append(BytesIO(buffer.getvalue()))
+    writer.add_attachment(_xml_filename(request.invoice_number), content)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def create_tarif595_combined_pdf(request: Tarif595Request) -> bytes:
+    xml_content = create_tarif595_xml(request)
+    writer = PdfWriter()
+    for content in (
+        create_qr_bill_pdf(request.qr_bill),
+        create_tarif595_human_pdf(request),
+        create_tarif595_machine_pdf(request, xml_content),
+    ):
+        writer.append(BytesIO(content))
+
+    writer.add_attachment(_xml_filename(request.invoice_number), xml_content)
     output = BytesIO()
     writer.write(output)
     return output.getvalue()

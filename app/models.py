@@ -1,12 +1,8 @@
-from datetime import date, datetime
-from decimal import Decimal
-import re
+from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
-from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-from app.xml_attachment import validate_xml_attachment
 
 
 def normalize_iban(value: str) -> str:
@@ -19,6 +15,15 @@ def is_qr_iban(value: str) -> bool:
         return False
     iid = normalized[4:9]
     return iid.isdigit() and 30000 <= int(iid) <= 31999
+
+
+def is_valid_swiss_iban(value: str) -> bool:
+    normalized = normalize_iban(value)
+    if len(normalized) != 21 or normalized[:2] not in {"CH", "LI"} or not normalized.isalnum():
+        return False
+    rearranged = normalized[4:] + normalized[:4]
+    expanded = "".join(str(int(character, 36)) if character.isalpha() else character for character in rearranged)
+    return int(expanded) % 97 == 1
 
 
 def is_valid_iso11649_reference(value: str) -> bool:
@@ -65,16 +70,26 @@ class QrBillRequest(BaseModel):
     account: str = Field(..., min_length=5, max_length=34)
     creditor: Party
     debtor: Party
-    amount: Decimal | None = Field(None, gt=Decimal("0"))
+    amount: Decimal | None = Field(None, gt=Decimal("0"), le=Decimal("999999999.99"))
     currency: Literal["CHF", "EUR"] = "CHF"
     reference: str = Field("", max_length=27)
     message: str = Field("", max_length=140)
     bill_information: str = Field("", max_length=140)
+    invoice_number: str = Field("", max_length=35)
+    invoice_date: date | None = None
+    service_description: str = Field("", max_length=350)
+    service_date_begin: date | None = None
+    service_date_end: date | None = None
+    service_quantity: Decimal = Field(Decimal("1"), gt=Decimal("0"))
+    service_unit_price: Decimal | None = Field(None, ge=Decimal("0"))
 
     @field_validator("account")
     @classmethod
     def normalize_account(cls, value: str) -> str:
-        return normalize_iban(value)
+        normalized = normalize_iban(value)
+        if not is_valid_swiss_iban(normalized):
+            raise ValueError("Account must be a valid Swiss or Liechtenstein IBAN.")
+        return normalized
 
     @field_validator("reference")
     @classmethod
@@ -83,16 +98,28 @@ class QrBillRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_reference_rules(self) -> "QrBillRequest":
-        if not self.reference:
-            return self
-
         if is_qr_iban(self.account):
+            if not self.reference:
+                raise ValueError("QR-IBAN payments require a QR reference.")
             if not is_valid_qr_reference(self.reference):
                 raise ValueError("QR-IBAN payments require a valid 27-digit QR reference.")
             return self
 
+        if not self.reference:
+            return self
         if not is_valid_iso11649_reference(self.reference):
             raise ValueError("Non-QR IBAN payments require a valid ISO 11649 creditor reference.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_invoice_line(self) -> "QrBillRequest":
+        if self.service_date_begin and self.service_date_end:
+            if self.service_date_end < self.service_date_begin:
+                raise ValueError("Service end date must not be before its start date.")
+        if self.amount is not None and self.service_unit_price is not None:
+            line_total = (self.service_quantity * self.service_unit_price).quantize(Decimal("0.01"))
+            if line_total != self.amount.quantize(Decimal("0.01")):
+                raise ValueError("Invoice line total must equal the QR bill amount.")
         return self
 
 
@@ -105,145 +132,92 @@ class ReimbursementSlipRequest(BaseModel):
     amount: Decimal = Field(..., gt=Decimal("0"))
     currency: Literal["CHF", "EUR"] = "CHF"
     notes: str = Field("", max_length=500)
-    document_guid: str = Field(default_factory=lambda: uuid4().hex, pattern=r"^[0-9A-Fa-f]{32}$")
-    language: Literal["de", "fr", "it"] = "de"
-    tiers: Literal["G", "P", "S"] = "G"
 
 
 class XmlAttachmentRequest(BaseModel):
+    title: str = Field("Tarif 595 XML attachment", min_length=1, max_length=140)
     filename: str = Field("invoice.xml", min_length=1, max_length=140)
-    xml_content: str = Field(..., min_length=1, max_length=100000)
-
-    @field_validator("filename")
-    @classmethod
-    def validate_filename(cls, value: str) -> str:
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,250}\.xml", value, re.IGNORECASE):
-            raise ValueError("filename must be a safe XML filename")
-        return value
-
-    @field_validator("xml_content")
-    @classmethod
-    def validate_xml_content(cls, value: str) -> str:
-        validate_xml_attachment(value)
-        return value
+    xml_content: str = Field(..., min_length=1, max_length=10000)
 
 
-class Patient(BaseModel):
-    given_name: str = Field(..., min_length=1, max_length=35)
-    family_name: str = Field(..., min_length=1, max_length=35)
-    street: str = Field(..., min_length=1, max_length=70)
-    house_number: str = Field("", max_length=16)
-    postal_code: str = Field(..., min_length=1, max_length=16)
+class InvoiceCompany(BaseModel):
+    name: str = Field(..., min_length=1, max_length=35)
+    street: str = Field(..., min_length=1, max_length=35)
+    house_number: str = Field("", max_length=10)
+    postal_code: str = Field(..., min_length=1, max_length=9)
     city: str = Field(..., min_length=1, max_length=35)
-    country_code: str = Field("CH", min_length=2, max_length=2)
+
+
+class InvoicePatient(BaseModel):
+    family_name: str = Field(..., min_length=1, max_length=35)
+    given_name: str = Field(..., min_length=1, max_length=35)
+    gender: Literal["male", "female"]
     birthdate: date
-    gender: Literal["male", "female", "diverse"]
-    sex: Literal["male", "female"]
     ssn: str = Field(..., pattern=r"^(?:[0-9]{4,10}|756[0-9]{10}|438[0-9]{10})$")
-
-    @field_validator("country_code")
-    @classmethod
-    def uppercase_country_code(cls, value: str) -> str:
-        return value.upper()
-
-    @property
-    def name(self) -> str:
-        return f"{self.given_name} {self.family_name}"
-
-    def as_party(self) -> Party:
-        return Party(
-            name=self.name,
-            street=self.street,
-            house_number=self.house_number,
-            postal_code=self.postal_code,
-            city=self.city,
-            country_code=self.country_code,
-        )
+    street: str = Field(..., min_length=1, max_length=35)
+    house_number: str = Field("", max_length=10)
+    postal_code: str = Field(..., min_length=1, max_length=9)
+    city: str = Field(..., min_length=1, max_length=35)
 
 
-class InvoiceRequest(BaseModel):
-    invoice_number: str = Field(..., min_length=1, max_length=35)
-    invoice_date: datetime
-    document_guid: str = Field(default_factory=lambda: uuid4().hex, pattern=r"^[0-9A-Fa-f]{32}$")
-    language: Literal["de", "fr", "it"] = "de"
-    tiers: Literal["G", "P", "S"] = "G"
-
-    practice: Party
-    practice_gln: str = Field(..., pattern=r"^[0-9]{13}$")
-    insurer: Party
-    insurer_gln: str = Field(..., pattern=r"^[0-9]{13}$")
-    patient: Patient
-
-    account: str = Field(..., min_length=5, max_length=34)
-    reference: str = Field("", max_length=27)
-    amount: Decimal = Field(..., gt=Decimal("0"))
-    message: str = Field("", max_length=140)
-    notes: str = Field("", max_length=350)
-
-    treatment_begin: date
-    treatment_end: date
-    canton: Literal[
-        "AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR", "JU",
-        "LU", "NE", "NW", "OW", "SG", "SH", "SO", "SZ", "TI", "TG", "UR",
-        "VD", "VS", "ZG", "ZH", "LI",
-    ]
-    treatment_reason: Literal["disease", "accident", "maternity", "prevention", "birthdefect", "unknown"] = "disease"
-    role: Literal["physician", "physiotherapist", "psychologist", "other"] = "psychologist"
-
-    tariff_type: str = Field("595", pattern=r"^[0-9A-Z]{3}$")
-    service_code: str = Field(..., min_length=1, max_length=30)
-    service_name: str = Field(..., min_length=1, max_length=350)
-    quantity: Decimal = Field(Decimal("1"), gt=Decimal("0"))
-
-    @field_validator("account")
-    @classmethod
-    def normalize_account(cls, value: str) -> str:
-        return normalize_iban(value)
-
-    @field_validator("reference")
-    @classmethod
-    def normalize_reference(cls, value: str) -> str:
-        return value.replace(" ", "").upper()
+class Tarif595Service(BaseModel):
+    code: str = Field(..., min_length=1, max_length=30)
+    name: str = Field(..., min_length=1, max_length=350)
+    date_begin: date
+    date_end: date
+    quantity: Decimal = Field(..., gt=Decimal("0"))
+    unit_price: Decimal = Field(..., ge=Decimal("0"))
+    vat_rate: Decimal = Field(Decimal("0"), ge=Decimal("0"), le=Decimal("100"))
 
     @model_validator(mode="after")
-    def validate_invoice(self) -> "InvoiceRequest":
-        QrBillRequest(
-            account=self.account,
-            creditor=self.practice,
-            debtor=self.patient.as_party(),
-            amount=self.amount,
-            currency="CHF",
-            reference=self.reference,
-            message=self.message,
-            bill_information="Tarif 595",
-        )
-        if self.treatment_end < self.treatment_begin:
-            raise ValueError("treatment_end must not be before treatment_begin")
+    def validate_date_range(self) -> "Tarif595Service":
+        if self.date_end < self.date_begin:
+            raise ValueError("Service end date must not be before its start date.")
         return self
 
-    def qr_bill_request(self) -> QrBillRequest:
-        return QrBillRequest(
-            account=self.account,
-            creditor=self.practice,
-            debtor=self.patient.as_party(),
-            amount=self.amount,
-            currency="CHF",
-            reference=self.reference,
-            message=self.message,
-            bill_information=f"Tarif 595 / {self.invoice_number}",
-        )
+    @property
+    def amount(self) -> Decimal:
+        return (self.quantity * self.unit_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    def reimbursement_request(self) -> ReimbursementSlipRequest:
-        return ReimbursementSlipRequest(
-            provider_name=self.practice.name,
-            insurer_name=self.insurer.name,
-            insured_person=self.patient.name,
-            invoice_number=self.invoice_number,
-            treatment_period=f"{self.treatment_begin.isoformat()} to {self.treatment_end.isoformat()}",
-            amount=self.amount,
-            currency="CHF",
-            notes=self.notes,
-            document_guid=self.document_guid,
-            language=self.language,
-            tiers=self.tiers,
-        )
+
+class Tarif595Request(BaseModel):
+    qr_bill: QrBillRequest
+    invoice_number: str = Field(..., min_length=1, max_length=35)
+    invoice_date: date
+    provider_gln: str = Field(..., pattern=r"^[0-9]{13}$")
+    provider_location_gln: str = Field(..., pattern=r"^[0-9]{13}$")
+    provider_zsr: str | None = Field(None, pattern=r"^[A-Z][0-9]{6}$")
+    insurer_gln: str = Field(..., pattern=r"^[0-9]{13}$")
+    insurer: InvoiceCompany
+    patient: InvoicePatient
+    canton: Literal[
+        "AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR", "JU", "LU",
+        "NE", "NW", "OW", "SG", "SH", "SO", "SZ", "TG", "TI", "UR", "VD", "VS",
+        "ZG", "ZH", "LI",
+    ]
+    service: Tarif595Service
+    notes: str = Field("", max_length=350)
+
+    @field_validator("provider_zsr")
+    @classmethod
+    def normalize_zsr(cls, value: str | None) -> str | None:
+        return value.upper() if value else None
+
+    @model_validator(mode="after")
+    def validate_invoice_consistency(self) -> "Tarif595Request":
+        if self.qr_bill.amount is None:
+            raise ValueError("Tarif 595 documents require a QR bill amount.")
+        if self.qr_bill.amount.quantize(Decimal("0.01")) != self.service.amount:
+            raise ValueError("QR bill amount must equal quantity multiplied by unit price.")
+        if self.qr_bill.currency != "CHF":
+            raise ValueError("generalInvoiceRequest 5.0 requires CHF.")
+        xsd_limits = {
+            "creditor name": (self.qr_bill.creditor.name, 35),
+            "creditor street": (self.qr_bill.creditor.street, 35),
+            "creditor house number": (self.qr_bill.creditor.house_number, 10),
+            "creditor postal code": (self.qr_bill.creditor.postal_code, 9),
+        }
+        for label, (value, maximum) in xsd_limits.items():
+            if len(value) > maximum:
+                raise ValueError(f"Tarif 595 {label} must not exceed {maximum} characters.")
+        return self

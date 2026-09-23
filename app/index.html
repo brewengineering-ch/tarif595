@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tarif 595 document generator</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; }
+      body { margin: 0; background: #f6f8fa; color: #1f2328; }
+      main { max-width: 1080px; margin: 0 auto; padding: 2.5rem 1rem 4rem; }
+      h1 { margin: 0 0 0.5rem; }
+      h2 { margin-top: 0; }
+      h3 { margin: 1.5rem 0 0.25rem; font-size: 1rem; }
+      .intro { max-width: 760px; margin-bottom: 2rem; color: #59636e; }
+      section { background: #fff; border: 1px solid #d1d9e0; border-radius: 12px; padding: 1.5rem; margin-top: 1.25rem; }
+      .section-heading { display: flex; align-items: baseline; gap: 0.75rem; }
+      .step { color: #0969da; font-weight: 700; }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; }
+      .full { grid-column: 1 / -1; }
+      label { display: block; margin-top: 0.8rem; font-size: 0.9rem; font-weight: 600; }
+      input, textarea, select { width: 100%; box-sizing: border-box; margin-top: 0.3rem; padding: 0.65rem; border: 1px solid #8c959f; border-radius: 6px; font: inherit; background: #fff; }
+      textarea { min-height: 5rem; resize: vertical; }
+      .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.25rem; }
+      button { border: 0; border-radius: 6px; padding: 0.7rem 1rem; background: #1f883d; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+      button.secondary { background: #0969da; }
+      button:disabled { opacity: 0.6; cursor: wait; }
+      .status { min-height: 1.4rem; margin: 0.8rem 0 0; color: #59636e; }
+      .download-link { display: inline-block; margin-top: 0.25rem; }
+      .hint { margin: 0.25rem 0 0; color: #59636e; font-size: 0.9rem; }
+      @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Tarif 595 document generator</h1>
+      <p class="intro">Enter the payment information once, then add the invoice details needed for a schema-valid generalInvoiceRequest 5.0 document. Submitted data and generated files are not persisted.</p>
+
+      <form id="document-form">
+        <section id="qr-section">
+          <div class="section-heading"><span class="step">1</span><h2>Swiss QR bill</h2></div>
+          <p class="hint">These fields are sufficient to create the payment slip.</p>
+
+          <h3>Creditor</h3>
+          <div class="grid">
+            <label class="full">Name <input name="creditor_name" value="Example Practice AG" maxlength="35" required /></label>
+            <label>Street <input name="creditor_street" value="Bahnhofstrasse" maxlength="35" required /></label>
+            <label>House number <input name="creditor_house_number" value="1" maxlength="10" /></label>
+            <label>Postal code <input name="creditor_postal_code" value="8001" maxlength="9" required /></label>
+            <label>City <input name="creditor_city" value="Zürich" maxlength="35" required /></label>
+            <label>Country code <input name="creditor_country_code" value="CH" minlength="2" maxlength="2" required /></label>
+          </div>
+
+          <h3>Debtor</h3>
+          <div class="grid">
+            <label class="full">Name <input name="debtor_name" value="Max Muster" maxlength="70" required /></label>
+            <label>Street <input name="debtor_street" value="Musterweg" maxlength="70" required /></label>
+            <label>House number <input name="debtor_house_number" value="5" maxlength="16" /></label>
+            <label>Postal code <input name="debtor_postal_code" value="3000" maxlength="16" required /></label>
+            <label>City <input name="debtor_city" value="Bern" maxlength="35" required /></label>
+            <label>Country code <input name="debtor_country_code" value="CH" minlength="2" maxlength="2" required /></label>
+          </div>
+
+          <h3>Payment</h3>
+          <div class="grid">
+            <label class="full">IBAN <input name="account" value="CH4431999123000889012" maxlength="34" required /></label>
+            <label>Amount <input name="amount" value="125.40" type="number" min="0.01" step="0.01" required /></label>
+            <label>Currency <select name="currency"><option>CHF</option><option>EUR</option></select></label>
+            <label class="full">Reference <input name="reference" value="210000000003139471430009017" maxlength="27" /></label>
+            <label class="full">Message <input name="message" value="Tarif 595 invoice" maxlength="140" /></label>
+            <label class="full">Bill information <input name="bill_information" value="Tarif 595" maxlength="140" /></label>
+          </div>
+
+          <h3>Invoice</h3>
+          <p class="hint">This information is shown in the invoice above the detachable QR payment slip.</p>
+          <div class="grid">
+            <label>Invoice number <input name="invoice_number" value="T595-2026-0001" maxlength="35" required /></label>
+            <label>Invoice date <input name="invoice_date" value="2026-09-16" type="date" required /></label>
+            <label class="full">Service description <input name="service_name" value="Health promotion service" maxlength="350" required /></label>
+            <label>Service start date <input name="service_date_begin" value="2026-09-01" type="date" required /></label>
+            <label>Service end date <input name="service_date_end" value="2026-09-15" type="date" required /></label>
+            <label>Quantity <input name="service_quantity" value="1" type="number" min="0.01" step="0.01" required /></label>
+            <label>Unit price <input name="service_unit_price" value="125.40" type="number" min="0" step="0.01" required /></label>
+          </div>
+          <div class="actions">
+            <button type="button" data-endpoint="/api/qr-bill" data-payload="qr" data-filename="qr-bill.pdf">Generate Swiss QR bill</button>
+          </div>
+        </section>
+
+        <section id="tarif-section">
+          <div class="section-heading"><span class="step">2</span><h2>Tarif 595 invoice</h2></div>
+          <p class="hint">These additional fields produce generalInvoiceRequest 5.0 XML using tariff type 595.</p>
+
+          <h3>Provider</h3>
+          <div class="grid">
+            <label>Provider GLN <input name="provider_gln" value="7601001302112" pattern="[0-9]{13}" required /></label>
+            <label>Provider location GLN <input name="provider_location_gln" value="7601001302112" pattern="[0-9]{13}" required /></label>
+            <label>Provider ZSR/RCC number <input name="provider_zsr" value="Q987654" pattern="[A-Za-z][0-9]{6}" /></label>
+            <label>Canton <select name="canton"><option>ZH</option><option>BE</option><option>LU</option><option>AG</option><option>AI</option><option>AR</option><option>BL</option><option>BS</option><option>FR</option><option>GE</option><option>GL</option><option>GR</option><option>JU</option><option>NE</option><option>NW</option><option>OW</option><option>SG</option><option>SH</option><option>SO</option><option>SZ</option><option>TG</option><option>TI</option><option>UR</option><option>VD</option><option>VS</option><option>ZG</option><option>LI</option></select></label>
+          </div>
+
+          <h3>Insurer</h3>
+          <div class="grid">
+            <label>Insurer GLN <input name="insurer_gln" value="7634567890000" pattern="[0-9]{13}" required /></label>
+            <label>Insurer name <input name="insurer_name" value="Example Versicherung" maxlength="35" required /></label>
+            <label>Street <input name="insurer_street" value="Kassengraben" maxlength="35" required /></label>
+            <label>House number <input name="insurer_house_number" value="222" maxlength="10" /></label>
+            <label>Postal code <input name="insurer_postal_code" value="4000" maxlength="9" required /></label>
+            <label>City <input name="insurer_city" value="Basel" maxlength="35" required /></label>
+          </div>
+
+          <h3>Patient</h3>
+          <div class="grid">
+            <label>Given name <input name="patient_given_name" value="Max" maxlength="35" required /></label>
+            <label>Family name <input name="patient_family_name" value="Muster" maxlength="35" required /></label>
+            <label>Gender <select name="patient_gender"><option value="male">Male</option><option value="female">Female</option></select></label>
+            <label>Date of birth <input name="patient_birthdate" value="1980-12-01" type="date" required /></label>
+            <label class="full">Social security number <input name="patient_ssn" value="7561234567890" pattern="(?:[0-9]{4,10}|756[0-9]{10}|438[0-9]{10})" required /></label>
+            <label>Street <input name="patient_street" value="Musterweg" maxlength="35" required /></label>
+            <label>House number <input name="patient_house_number" value="5" maxlength="10" /></label>
+            <label>Postal code <input name="patient_postal_code" value="3000" maxlength="9" required /></label>
+            <label>City <input name="patient_city" value="Bern" maxlength="35" required /></label>
+          </div>
+
+          <h3>Tarif 595 service</h3>
+          <div class="grid">
+            <label>Tariff position <input name="service_code" value="595.100" maxlength="30" required /></label>
+            <label>VAT rate (%) <input name="service_vat_rate" value="0" type="number" min="0" max="100" step="0.01" required /></label>
+            <label class="full">Notes <textarea name="notes" maxlength="350">Generated for direct reimbursement.</textarea></label>
+          </div>
+
+          <div class="actions">
+            <button class="secondary" type="button" data-endpoint="/api/tarif595/human-readable" data-payload="tarif" data-filename="human-readable.pdf">Generate human-readable PDF</button>
+            <button class="secondary" type="button" data-endpoint="/api/tarif595/machine-readable" data-payload="tarif" data-filename="machine-readable.pdf">Generate machine-readable PDF</button>
+            <button type="button" data-endpoint="/api/tarif595/combined" data-payload="tarif" data-filename="complete-tarif595.pdf">Generate combined PDF</button>
+          </div>
+        </section>
+
+        <p class="status" role="status" aria-live="polite"></p>
+        <a class="download-link" hidden></a>
+      </form>
+    </main>
+
+    <script>
+      const form = document.querySelector("#document-form");
+      const status = form.querySelector(".status");
+      const downloadLink = form.querySelector(".download-link");
+
+      const values = () => Object.fromEntries(new FormData(form).entries());
+      const qrPayload = (data) => ({
+        account: data.account,
+        creditor: {
+          name: data.creditor_name, street: data.creditor_street, house_number: data.creditor_house_number,
+          postal_code: data.creditor_postal_code, city: data.creditor_city, country_code: data.creditor_country_code
+        },
+        debtor: {
+          name: data.debtor_name, street: data.debtor_street, house_number: data.debtor_house_number,
+          postal_code: data.debtor_postal_code, city: data.debtor_city, country_code: data.debtor_country_code
+        },
+        amount: data.amount,
+        currency: data.currency,
+        reference: data.reference,
+        message: data.message,
+        bill_information: data.bill_information,
+        invoice_number: data.invoice_number,
+        invoice_date: data.invoice_date,
+        service_description: data.service_name,
+        service_date_begin: data.service_date_begin,
+        service_date_end: data.service_date_end,
+        service_quantity: data.service_quantity,
+        service_unit_price: data.service_unit_price
+      });
+      const tarifPayload = (data) => ({
+        qr_bill: qrPayload(data),
+        invoice_number: data.invoice_number,
+        invoice_date: data.invoice_date,
+        provider_gln: data.provider_gln,
+        provider_location_gln: data.provider_location_gln,
+        provider_zsr: data.provider_zsr || null,
+        insurer_gln: data.insurer_gln,
+        insurer: {
+          name: data.insurer_name, street: data.insurer_street, house_number: data.insurer_house_number,
+          postal_code: data.insurer_postal_code, city: data.insurer_city
+        },
+        patient: {
+          given_name: data.patient_given_name, family_name: data.patient_family_name,
+          gender: data.patient_gender, birthdate: data.patient_birthdate, ssn: data.patient_ssn,
+          street: data.patient_street, house_number: data.patient_house_number,
+          postal_code: data.patient_postal_code, city: data.patient_city
+        },
+        canton: data.canton,
+        service: {
+          code: data.service_code, name: data.service_name,
+          date_begin: data.service_date_begin, date_end: data.service_date_end,
+          quantity: data.service_quantity, unit_price: data.service_unit_price,
+          vat_rate: data.service_vat_rate
+        },
+        notes: data.notes
+      });
+
+      const validateSections = (includeTarif) => {
+        const sections = includeTarif ? ["#qr-section", "#tarif-section"] : ["#qr-section"];
+        for (const section of sections) {
+          for (const input of form.querySelectorAll(`${section} input, ${section} select, ${section} textarea`)) {
+            if (!input.checkValidity()) {
+              input.reportValidity();
+              return false;
+            }
+          }
+        }
+        return true;
+      };
+
+      form.querySelectorAll("button[data-endpoint]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const isTarif = button.dataset.payload === "tarif";
+          if (!validateSections(isTarif)) return;
+          if (downloadLink.dataset.objectUrl) URL.revokeObjectURL(downloadLink.dataset.objectUrl);
+          downloadLink.hidden = true;
+          status.textContent = "Generating PDF...";
+          form.querySelectorAll("button").forEach((item) => item.disabled = true);
+          try {
+            const data = values();
+            const response = await fetch(button.dataset.endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(isTarif ? tarifPayload(data) : qrPayload(data))
+            });
+            if (!response.ok) {
+              const payload = await response.json().catch(() => null);
+              throw new Error(JSON.stringify(payload?.detail ?? payload ?? response.statusText));
+            }
+            const blob = await response.blob();
+            const objectUrl = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = objectUrl;
+            link.download = button.dataset.filename;
+            link.click();
+            downloadLink.href = objectUrl;
+            downloadLink.download = button.dataset.filename;
+            downloadLink.textContent = `Download ${button.dataset.filename} again`;
+            downloadLink.dataset.objectUrl = objectUrl;
+            downloadLink.hidden = false;
+            status.textContent = "PDF ready.";
+          } catch (error) {
+            status.textContent = `Request failed: ${error.message}`;
+          } finally {
+            form.querySelectorAll("button").forEach((item) => item.disabled = false);
+          }
+        });
+      });
+    </script>
+  </body>
+</html>
