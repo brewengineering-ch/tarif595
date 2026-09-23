@@ -4,31 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Tarif 595 document generator</title>
-    <style>
-      :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; }
-      body { margin: 0; background: #f6f8fa; color: #1f2328; }
-      main { max-width: 1080px; margin: 0 auto; padding: 2.5rem 1rem 4rem; }
-      h1 { margin: 0 0 0.5rem; }
-      h2 { margin-top: 0; }
-      h3 { margin: 1.5rem 0 0.25rem; font-size: 1rem; }
-      .intro { max-width: 760px; margin-bottom: 2rem; color: #59636e; }
-      section { background: #fff; border: 1px solid #d1d9e0; border-radius: 12px; padding: 1.5rem; margin-top: 1.25rem; }
-      .section-heading { display: flex; align-items: baseline; gap: 0.75rem; }
-      .step { color: #0969da; font-weight: 700; }
-      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; }
-      .full { grid-column: 1 / -1; }
-      label { display: block; margin-top: 0.8rem; font-size: 0.9rem; font-weight: 600; }
-      input, textarea, select { width: 100%; box-sizing: border-box; margin-top: 0.3rem; padding: 0.65rem; border: 1px solid #8c959f; border-radius: 6px; font: inherit; background: #fff; }
-      textarea { min-height: 5rem; resize: vertical; }
-      .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.25rem; }
-      button { border: 0; border-radius: 6px; padding: 0.7rem 1rem; background: #1f883d; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
-      button.secondary { background: #0969da; }
-      button:disabled { opacity: 0.6; cursor: wait; }
-      .status { min-height: 1.4rem; margin: 0.8rem 0 0; color: #59636e; }
-      .download-link { display: inline-block; margin-top: 0.25rem; }
-      .hint { margin: 0.25rem 0 0; color: #59636e; font-size: 0.9rem; }
-      @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
-    </style>
+    <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main>
@@ -140,114 +116,6 @@
       </form>
     </main>
 
-    <script>
-      const form = document.querySelector("#document-form");
-      const status = form.querySelector(".status");
-      const downloadLink = form.querySelector(".download-link");
-
-      const values = () => Object.fromEntries(new FormData(form).entries());
-      const qrPayload = (data) => ({
-        account: data.account,
-        creditor: {
-          name: data.creditor_name, street: data.creditor_street, house_number: data.creditor_house_number,
-          postal_code: data.creditor_postal_code, city: data.creditor_city, country_code: data.creditor_country_code
-        },
-        debtor: {
-          name: data.debtor_name, street: data.debtor_street, house_number: data.debtor_house_number,
-          postal_code: data.debtor_postal_code, city: data.debtor_city, country_code: data.debtor_country_code
-        },
-        amount: data.amount,
-        currency: data.currency,
-        reference: data.reference,
-        message: data.message,
-        bill_information: data.bill_information,
-        invoice_number: data.invoice_number,
-        invoice_date: data.invoice_date,
-        service_description: data.service_name,
-        service_date_begin: data.service_date_begin,
-        service_date_end: data.service_date_end,
-        service_quantity: data.service_quantity,
-        service_unit_price: data.service_unit_price
-      });
-      const tarifPayload = (data) => ({
-        qr_bill: qrPayload(data),
-        invoice_number: data.invoice_number,
-        invoice_date: data.invoice_date,
-        provider_gln: data.provider_gln,
-        provider_location_gln: data.provider_location_gln,
-        provider_zsr: data.provider_zsr || null,
-        insurer_gln: data.insurer_gln,
-        insurer: {
-          name: data.insurer_name, street: data.insurer_street, house_number: data.insurer_house_number,
-          postal_code: data.insurer_postal_code, city: data.insurer_city
-        },
-        patient: {
-          given_name: data.patient_given_name, family_name: data.patient_family_name,
-          gender: data.patient_gender, birthdate: data.patient_birthdate, ssn: data.patient_ssn,
-          street: data.patient_street, house_number: data.patient_house_number,
-          postal_code: data.patient_postal_code, city: data.patient_city
-        },
-        canton: data.canton,
-        service: {
-          code: data.service_code, name: data.service_name,
-          date_begin: data.service_date_begin, date_end: data.service_date_end,
-          quantity: data.service_quantity, unit_price: data.service_unit_price,
-          vat_rate: data.service_vat_rate
-        },
-        notes: data.notes
-      });
-
-      const validateSections = (includeTarif) => {
-        const sections = includeTarif ? ["#qr-section", "#tarif-section"] : ["#qr-section"];
-        for (const section of sections) {
-          for (const input of form.querySelectorAll(`${section} input, ${section} select, ${section} textarea`)) {
-            if (!input.checkValidity()) {
-              input.reportValidity();
-              return false;
-            }
-          }
-        }
-        return true;
-      };
-
-      form.querySelectorAll("button[data-endpoint]").forEach((button) => {
-        button.addEventListener("click", async () => {
-          const isTarif = button.dataset.payload === "tarif";
-          if (!validateSections(isTarif)) return;
-          if (downloadLink.dataset.objectUrl) URL.revokeObjectURL(downloadLink.dataset.objectUrl);
-          downloadLink.hidden = true;
-          status.textContent = "Generating PDF...";
-          form.querySelectorAll("button").forEach((item) => item.disabled = true);
-          try {
-            const data = values();
-            const response = await fetch(button.dataset.endpoint, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(isTarif ? tarifPayload(data) : qrPayload(data))
-            });
-            if (!response.ok) {
-              const payload = await response.json().catch(() => null);
-              throw new Error(JSON.stringify(payload?.detail ?? payload ?? response.statusText));
-            }
-            const blob = await response.blob();
-            const objectUrl = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = objectUrl;
-            link.download = button.dataset.filename;
-            link.click();
-            downloadLink.href = objectUrl;
-            downloadLink.download = button.dataset.filename;
-            downloadLink.textContent = `Download ${button.dataset.filename} again`;
-            downloadLink.dataset.objectUrl = objectUrl;
-            downloadLink.hidden = false;
-            status.textContent = "PDF ready.";
-          } catch (error) {
-            status.textContent = `Request failed: ${error.message}`;
-          } finally {
-            form.querySelectorAll("button").forEach((item) => item.disabled = false);
-          }
-        });
-      });
-    </script>
+    <script src="/static/app.js"></script>
   </body>
 </html>

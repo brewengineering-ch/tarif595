@@ -1,19 +1,18 @@
 import base64
-from io import BytesIO
-from pathlib import Path
 import sys
 import zlib
+from io import BytesIO
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.main import app
 from app.invoice_xml import create_tarif595_xml, validate_tarif595_xml
+from app.main import app
 from app.models import QrBillRequest, Tarif595Request
 from app.pdf import build_annex_qr_payloads, build_swiss_qr_payload
-
 
 client = TestClient(app)
 
@@ -89,6 +88,12 @@ def tarif595_payload() -> dict:
     }
 
 
+def qr_bill_payload(**overrides: object) -> dict:
+    payload = tarif595_payload()["qr_bill"].copy()
+    payload.update(overrides)
+    return payload
+
+
 def test_index_exposes_all_document_types() -> None:
     response = client.get("/")
 
@@ -100,6 +105,18 @@ def test_index_exposes_all_document_types() -> None:
     assert "Generate human-readable PDF" in response.text
     assert "Generate machine-readable PDF" in response.text
     assert "Generate combined PDF" in response.text
+    assert 'href="/static/styles.css"' in response.text
+    assert 'src="/static/app.js"' in response.text
+
+
+def test_static_assets_are_available() -> None:
+    stylesheet = client.get("/static/styles.css")
+    script = client.get("/static/app.js")
+
+    assert stylesheet.status_code == 200
+    assert stylesheet.headers["content-type"].startswith("text/css")
+    assert script.status_code == 200
+    assert "const qrPayload" in script.text
 
 
 def test_healthcheck() -> None:
@@ -167,30 +184,10 @@ def test_qr_bill_generation_returns_pdf() -> None:
 def test_qr_bill_generation_supports_scor_reference_with_non_qr_iban() -> None:
     response = client.post(
         "/api/qr-bill",
-        json={
-            "account": "CH9300762011623852957",
-            "creditor": {
-                "name": "Example Practice AG",
-                "street": "Bahnhofstrasse",
-                "house_number": "1",
-                "postal_code": "8001",
-                "city": "Zürich",
-                "country_code": "CH",
-            },
-            "debtor": {
-                "name": "Max Muster",
-                "street": "Musterweg",
-                "house_number": "5",
-                "postal_code": "3000",
-                "city": "Bern",
-                "country_code": "CH",
-            },
-            "amount": "125.40",
-            "currency": "CHF",
-            "reference": "RF18539007547034",
-            "message": "Tarif 595 invoice",
-            "bill_information": "Tarif 595",
-        },
+        json=qr_bill_payload(
+            account="CH9300762011623852957",
+            reference="RF18539007547034",
+        ),
     )
 
     assert response.status_code == 200
@@ -201,29 +198,7 @@ def test_qr_bill_generation_supports_scor_reference_with_non_qr_iban() -> None:
 def test_qr_bill_generation_supports_open_amount_bills() -> None:
     response = client.post(
         "/api/qr-bill",
-        json={
-            "account": "CH4431999123000889012",
-            "creditor": {
-                "name": "Example Practice AG",
-                "street": "Bahnhofstrasse",
-                "house_number": "1",
-                "postal_code": "8001",
-                "city": "Zürich",
-                "country_code": "CH",
-            },
-            "debtor": {
-                "name": "Max Muster",
-                "street": "Musterweg",
-                "house_number": "5",
-                "postal_code": "3000",
-                "city": "Bern",
-                "country_code": "CH",
-            },
-            "currency": "CHF",
-            "reference": "210000000003139471430009017",
-            "message": "Tarif 595 invoice",
-            "bill_information": "Tarif 595",
-        },
+        json=qr_bill_payload(amount=None),
     )
 
     assert response.status_code == 200
@@ -232,20 +207,17 @@ def test_qr_bill_generation_supports_open_amount_bills() -> None:
 
 
 def test_qr_bill_generation_rejects_invalid_iban() -> None:
-    payload = tarif595_payload()["qr_bill"]
-    payload["account"] = "CH4431999123000889013"
-
-    response = client.post("/api/qr-bill", json=payload)
+    response = client.post(
+        "/api/qr-bill",
+        json=qr_bill_payload(account="CH4431999123000889013"),
+    )
 
     assert response.status_code == 422
     assert "valid Swiss or Liechtenstein IBAN" in response.text
 
 
 def test_qr_bill_generation_requires_reference_for_qr_iban() -> None:
-    payload = tarif595_payload()["qr_bill"]
-    payload["reference"] = ""
-
-    response = client.post("/api/qr-bill", json=payload)
+    response = client.post("/api/qr-bill", json=qr_bill_payload(reference=""))
 
     assert response.status_code == 422
     assert "require a QR reference" in response.text
@@ -286,30 +258,7 @@ def test_qr_payload_uses_combined_addresses_when_house_number_is_missing() -> No
 def test_qr_bill_generation_rejects_qrr_reference_with_non_qr_iban() -> None:
     response = client.post(
         "/api/qr-bill",
-        json={
-            "account": "CH9300762011623852957",
-            "creditor": {
-                "name": "Example Practice AG",
-                "street": "Bahnhofstrasse",
-                "house_number": "1",
-                "postal_code": "8001",
-                "city": "Zürich",
-                "country_code": "CH",
-            },
-            "debtor": {
-                "name": "Max Muster",
-                "street": "Musterweg",
-                "house_number": "5",
-                "postal_code": "3000",
-                "city": "Bern",
-                "country_code": "CH",
-            },
-            "amount": "125.40",
-            "currency": "CHF",
-            "reference": "210000000003139471430009017",
-            "message": "Tarif 595 invoice",
-            "bill_information": "Tarif 595",
-        },
+        json=qr_bill_payload(account="CH9300762011623852957"),
     )
 
     assert response.status_code == 422
@@ -319,30 +268,10 @@ def test_qr_bill_generation_rejects_qrr_reference_with_non_qr_iban() -> None:
 def test_qr_bill_generation_rejects_invalid_scor_reference() -> None:
     response = client.post(
         "/api/qr-bill",
-        json={
-            "account": "CH9300762011623852957",
-            "creditor": {
-                "name": "Example Practice AG",
-                "street": "Bahnhofstrasse",
-                "house_number": "",
-                "postal_code": "8001",
-                "city": "Zürich",
-                "country_code": "CH",
-            },
-            "debtor": {
-                "name": "Max Muster",
-                "street": "Musterweg",
-                "house_number": "",
-                "postal_code": "3000",
-                "city": "Bern",
-                "country_code": "CH",
-            },
-            "amount": "125.40",
-            "currency": "CHF",
-            "reference": "RF18539007547035",
-            "message": "Tarif 595 invoice",
-            "bill_information": "Tarif 595",
-        },
+        json=qr_bill_payload(
+            account="CH9300762011623852957",
+            reference="RF18539007547035",
+        ),
     )
 
     assert response.status_code == 422
@@ -352,30 +281,7 @@ def test_qr_bill_generation_rejects_invalid_scor_reference() -> None:
 def test_qr_bill_generation_rejects_non_numeric_reference_with_qr_iban() -> None:
     response = client.post(
         "/api/qr-bill",
-        json={
-            "account": "CH4431999123000889012",
-            "creditor": {
-                "name": "Example Practice AG",
-                "street": "Bahnhofstrasse",
-                "house_number": "1",
-                "postal_code": "8001",
-                "city": "Zürich",
-                "country_code": "CH",
-            },
-            "debtor": {
-                "name": "Max Muster",
-                "street": "Musterweg",
-                "house_number": "5",
-                "postal_code": "3000",
-                "city": "Bern",
-                "country_code": "CH",
-            },
-            "amount": "125.40",
-            "currency": "CHF",
-            "reference": "RF18539007547034",
-            "message": "Tarif 595 invoice",
-            "bill_information": "Tarif 595",
-        },
+        json=qr_bill_payload(reference="RF18539007547034"),
     )
 
     assert response.status_code == 422
@@ -385,30 +291,7 @@ def test_qr_bill_generation_rejects_non_numeric_reference_with_qr_iban() -> None
 def test_qr_bill_generation_rejects_invalid_checksum_reference_with_qr_iban() -> None:
     response = client.post(
         "/api/qr-bill",
-        json={
-            "account": "CH4431999123000889012",
-            "creditor": {
-                "name": "Example Practice AG",
-                "street": "Bahnhofstrasse",
-                "house_number": "1",
-                "postal_code": "8001",
-                "city": "Zürich",
-                "country_code": "CH",
-            },
-            "debtor": {
-                "name": "Max Muster",
-                "street": "Musterweg",
-                "house_number": "5",
-                "postal_code": "3000",
-                "city": "Bern",
-                "country_code": "CH",
-            },
-            "amount": "125.40",
-            "currency": "CHF",
-            "reference": "210000000003139471430009018",
-            "message": "Tarif 595 invoice",
-            "bill_information": "Tarif 595",
-        },
+        json=qr_bill_payload(reference="210000000003139471430009018"),
     )
 
     assert response.status_code == 422

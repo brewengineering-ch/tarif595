@@ -1,4 +1,4 @@
-# tarif595
+# Tarif 595 document generator
 
 Minimal open source web application to generate the documents needed for Swiss Tarif 595 workflows:
 
@@ -21,11 +21,14 @@ No request payloads or generated files are persisted by the application. PDFs ar
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
 ```
 
 Open http://127.0.0.1:8000/.
+
+Windows PowerShell users can activate the environment with
+`.venv\Scripts\Activate.ps1`.
 
 ### Docker
 
@@ -45,6 +48,20 @@ docker run --rm -p 8000:8000 tarif595
 
 Interactive API documentation is available at `/docs`.
 
+## Project structure
+
+The application intentionally uses a small number of plain Python modules:
+
+- `app/main.py` defines the HTTP endpoints.
+- `app/models.py` validates API input.
+- `app/invoice_xml.py` creates and validates the Tarif 595 XML.
+- `app/pdf.py` creates all PDF documents.
+- `app/index.html` and `app/static/` contain the Web UI.
+- `tests/test_app.py` exercises the application from its public interfaces.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for a beginner-friendly setup guide,
+development checks, and suggested first contributions.
+
 ## Reference documentation
 
 - [QR-bill – Swiss Payment Standards](https://www.six-group.com/en/products-services/banking-services/payment-standardization/standards/qr-bill.html)
@@ -52,9 +69,10 @@ Interactive API documentation is available at `/docs`.
 - [Implementation Guidelines for the QR-bill, version 2.3 (PDF)](https://www.six-group.com/dam/download/banking-services/standardization/qr-bill/ig-qr-bill-v2.3-en.pdf)
 - [Forum Datenaustausch: generalInvoiceRequest 5.0 documentation and XSD](https://www.forum-datenaustausch.ch/xml-standards/rechnung)
 
-## Tests
+## Development checks
 
 ```bash
-pip install -r requirements-dev.txt
+ruff check .
+ruff format --check .
 pytest
 ```

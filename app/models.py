@@ -1,12 +1,29 @@
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+MODULO_97 = 97
+QR_REFERENCE_CHECKSUM_TABLE = (0, 9, 4, 6, 8, 2, 7, 1, 3, 5)
+
+
+def _remove_spaces_and_uppercase(value: str) -> str:
+    return value.replace(" ", "").upper()
+
+
+def _iso_modulo_97(value: str) -> int:
+    rearranged = value[4:] + value[:4]
+    remainder = 0
+    for character in rearranged:
+        digits = str(int(character, 36)) if character.isalpha() else character
+        for digit in digits:
+            remainder = (remainder * 10 + int(digit)) % MODULO_97
+    return remainder
+
 
 def normalize_iban(value: str) -> str:
-    return value.replace(" ", "").upper()
+    return _remove_spaces_and_uppercase(value)
 
 
 def is_qr_iban(value: str) -> bool:
@@ -21,23 +38,14 @@ def is_valid_swiss_iban(value: str) -> bool:
     normalized = normalize_iban(value)
     if len(normalized) != 21 or normalized[:2] not in {"CH", "LI"} or not normalized.isalnum():
         return False
-    rearranged = normalized[4:] + normalized[:4]
-    expanded = "".join(str(int(character, 36)) if character.isalpha() else character for character in rearranged)
-    return int(expanded) % 97 == 1
+    return _iso_modulo_97(normalized) == 1
 
 
 def is_valid_iso11649_reference(value: str) -> bool:
-    normalized = value.replace(" ", "").upper()
+    normalized = _remove_spaces_and_uppercase(value)
     if not normalized.startswith("RF") or not (5 <= len(normalized) <= 25) or not normalized.isalnum():
         return False
-
-    rearranged = normalized[4:] + normalized[:4]
-    expanded = "".join(str(int(character, 36)) if character.isalpha() else character for character in rearranged)
-
-    remainder = 0
-    for character in expanded:
-        remainder = (remainder * 10 + int(character)) % 97
-    return remainder == 1
+    return _iso_modulo_97(normalized) == 1
 
 
 def is_valid_qr_reference(value: str) -> bool:
@@ -45,10 +53,9 @@ def is_valid_qr_reference(value: str) -> bool:
     if len(normalized) != 27 or not normalized.isdigit():
         return False
 
-    table = [0, 9, 4, 6, 8, 2, 7, 1, 3, 5]
     carry = 0
     for digit in normalized:
-        carry = table[(carry + int(digit)) % 10]
+        carry = QR_REFERENCE_CHECKSUM_TABLE[(carry + int(digit)) % 10]
     return carry == 0
 
 
@@ -94,7 +101,7 @@ class QrBillRequest(BaseModel):
     @field_validator("reference")
     @classmethod
     def normalize_reference(cls, value: str) -> str:
-        return value.replace(" ", "").upper()
+        return _remove_spaces_and_uppercase(value)
 
     @model_validator(mode="after")
     def validate_reference_rules(self) -> "QrBillRequest":
@@ -113,9 +120,8 @@ class QrBillRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_invoice_line(self) -> "QrBillRequest":
-        if self.service_date_begin and self.service_date_end:
-            if self.service_date_end < self.service_date_begin:
-                raise ValueError("Service end date must not be before its start date.")
+        if self.service_date_begin and self.service_date_end and self.service_date_end < self.service_date_begin:
+            raise ValueError("Service end date must not be before its start date.")
         if self.amount is not None and self.service_unit_price is not None:
             line_total = (self.service_quantity * self.service_unit_price).quantize(Decimal("0.01"))
             if line_total != self.amount.quantize(Decimal("0.01")):
@@ -191,9 +197,33 @@ class Tarif595Request(BaseModel):
     insurer: InvoiceCompany
     patient: InvoicePatient
     canton: Literal[
-        "AG", "AI", "AR", "BE", "BL", "BS", "FR", "GE", "GL", "GR", "JU", "LU",
-        "NE", "NW", "OW", "SG", "SH", "SO", "SZ", "TG", "TI", "UR", "VD", "VS",
-        "ZG", "ZH", "LI",
+        "AG",
+        "AI",
+        "AR",
+        "BE",
+        "BL",
+        "BS",
+        "FR",
+        "GE",
+        "GL",
+        "GR",
+        "JU",
+        "LU",
+        "NE",
+        "NW",
+        "OW",
+        "SG",
+        "SH",
+        "SO",
+        "SZ",
+        "TG",
+        "TI",
+        "UR",
+        "VD",
+        "VS",
+        "ZG",
+        "ZH",
+        "LI",
     ]
     service: Tarif595Service
     notes: str = Field("", max_length=350)
