@@ -1,5 +1,5 @@
-from datetime import datetime, time, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from datetime import UTC, datetime, time
+from decimal import ROUND_HALF_UP, Decimal
 from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
@@ -7,7 +7,6 @@ from uuid import uuid4
 from lxml import etree
 
 from app.models import InvoiceCompany, InvoicePatient, Party, Tarif595Request
-
 
 INVOICE_NAMESPACE = "http://www.forum-datenaustausch.ch/invoice"
 XSI_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance"
@@ -26,30 +25,33 @@ def _element(parent: etree._Element, tag_name: str, **attributes: object) -> etr
     )
 
 
+def _text_element(parent: etree._Element, tag_name: str, text: object) -> etree._Element:
+    element = _element(parent, tag_name)
+    element.text = str(text)
+    return element
+
+
 def _postal(parent: etree._Element, party: Party | InvoiceCompany | InvoicePatient) -> None:
     postal = _element(parent, "postal")
     street_text = f"{party.street} {party.house_number}".strip()
-    street = _element(postal, "street", street_name=party.street, house_no=party.house_number)
-    street.text = street_text
-    zip_element = _element(postal, "zip")
-    zip_element.text = party.postal_code
-    city = _element(postal, "city")
-    city.text = party.city
+    street = _text_element(postal, "street", street_text)
+    street.set("street_name", party.street)
+    if party.house_number:
+        street.set("house_no", party.house_number)
+    _text_element(postal, "zip", party.postal_code)
+    _text_element(postal, "city", party.city)
 
 
 def _company(parent: etree._Element, party: Party | InvoiceCompany) -> None:
     company = _element(parent, "company")
-    name = _element(company, "companyname")
-    name.text = party.name
+    _text_element(company, "companyname", party.name)
     _postal(company, party)
 
 
 def _person(parent: etree._Element, patient: InvoicePatient) -> None:
     person = _element(parent, "person")
-    family_name = _element(person, "familyname")
-    family_name.text = patient.family_name
-    given_name = _element(person, "givenname")
-    given_name.text = patient.given_name
+    _text_element(person, "familyname", patient.family_name)
+    _text_element(person, "givenname", patient.given_name)
     _postal(person, patient)
 
 
@@ -97,7 +99,7 @@ def create_tarif595_xml(request: Tarif595Request) -> bytes:
     _element(processing, "transport", **{"from": request.provider_gln, "to": request.insurer_gln})
 
     payload = _element(root, "payload", request_type="invoice", request_subtype="normal")
-    invoice_datetime = datetime.combine(request.invoice_date, time.min, tzinfo=timezone.utc)
+    invoice_datetime = datetime.combine(request.invoice_date, time.min, tzinfo=UTC)
     _element(
         payload,
         "invoice",
@@ -109,8 +111,7 @@ def create_tarif595_xml(request: Tarif595Request) -> bytes:
     prolog = _element(body, "prolog")
     _element(prolog, "generator", name="tarif595", version="1")
     if request.notes:
-        remark = _element(body, "remark")
-        remark.text = request.notes
+        _text_element(body, "remark", request.notes)
 
     reimbursement = _element(body, "tiers_garant")
     billers = _element(reimbursement, "billers")
@@ -153,11 +154,9 @@ def create_tarif595_xml(request: Tarif595Request) -> bytes:
 
     amount = request.service.amount
     vat_rate = request.service.vat_rate
-    vat_amount = (
-        amount - amount / (Decimal("1") + vat_rate / Decimal("100"))
-        if vat_rate
-        else Decimal("0")
-    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    vat_amount = (amount - amount / (Decimal("1") + vat_rate / Decimal("100")) if vat_rate else Decimal("0")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
     balance = _element(
         reimbursement,
         "balance",

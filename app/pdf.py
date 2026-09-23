@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import base64
+import zlib
+from collections.abc import Iterable
 from datetime import date, datetime, time
 from io import BytesIO
-from typing import Iterable
 from xml.etree import ElementTree
-import zlib
 
 import qrcode
 from PIL import ImageDraw
@@ -168,26 +168,6 @@ def _address_fields(party: Party) -> list[str]:
     ]
 
 
-def _text_block(pdf: canvas.Canvas, x: float, y: float, title: str, lines: Iterable[str]) -> float:
-    pdf.setFont("Helvetica-Bold", 11)
-    pdf.drawString(x, y, title)
-    pdf.setFont("Helvetica", 10)
-    current_y = y - 5 * mm
-    for line in lines:
-        pdf.drawString(x, current_y, str(line))
-        current_y -= 4.5 * mm
-    return current_y
-
-
-def _wrap_preview_lines(value: str, width: int, max_lines: int) -> list[str]:
-    wrapped: list[str] = []
-    for raw_line in value.splitlines() or [""]:
-        wrapped.extend(raw_line[index : index + width] for index in range(0, len(raw_line), width) or [0])
-        if len(wrapped) >= max_lines:
-            return wrapped[:max_lines]
-    return wrapped[:max_lines]
-
-
 def build_swiss_qr_payload(request: QrBillRequest) -> str:
     creditor = request.creditor
     debtor = request.debtor
@@ -291,10 +271,7 @@ def _draw_invoice(pdf: canvas.Canvas, request: QrBillRequest, height: float) -> 
     pdf.drawString(columns[0] + 2 * mm, row_y - 5.8 * mm, description_lines[0])
     period = ""
     if request.service_date_begin and request.service_date_end:
-        period = (
-            f"{request.service_date_begin.strftime('%d.%m.%Y')} - "
-            f"{request.service_date_end.strftime('%d.%m.%Y')}"
-        )
+        period = f"{request.service_date_begin.strftime('%d.%m.%Y')} - {request.service_date_end.strftime('%d.%m.%Y')}"
     pdf.drawString(columns[1] + 2 * mm, row_y - 5.8 * mm, period)
     pdf.drawRightString(columns[3] - 2 * mm, row_y - 5.8 * mm, f"{request.service_quantity:g}")
     if unit_price is not None:
@@ -496,16 +473,15 @@ def create_xml_attachment_pdf(request: XmlAttachmentRequest) -> bytes:
     width, height = A4
 
     pdf.setTitle(request.title)
-    chunks = [
-        request.xml_content[index : index + 1800]
-        for index in range(0, len(request.xml_content), 1800)
-    ]
+    chunks = [request.xml_content[index : index + 1800] for index in range(0, len(request.xml_content), 1800)]
     for page_start in range(0, len(chunks), 4):
         pdf.setFont("Helvetica-Bold", 18)
         pdf.drawString(20 * mm, height - 20 * mm, request.title)
         pdf.setFont("Helvetica", 10)
         pdf.drawString(20 * mm, height - 28 * mm, f"Embedded XML filename: {request.filename}")
-        pdf.drawString(20 * mm, height - 34 * mm, "Scan the QR codes in numerical order or extract the embedded XML file.")
+        pdf.drawString(
+            20 * mm, height - 34 * mm, "Scan the QR codes in numerical order or extract the embedded XML file."
+        )
 
         for position, chunk in enumerate(chunks[page_start : page_start + 4]):
             chunk_number = page_start + position + 1
@@ -773,10 +749,7 @@ def build_annex_qr_payloads(xml_content: bytes) -> list[str]:
     compressed = compressor.compress(xml_content) + compressor.flush()
     encoded = base64.b64encode(compressed).decode("ascii")
     chunk_size = 1262
-    return [
-        encoded[index : index + chunk_size].ljust(chunk_size)
-        for index in range(0, len(encoded), chunk_size)
-    ]
+    return [encoded[index : index + chunk_size].ljust(chunk_size) for index in range(0, len(encoded), chunk_size)]
 
 
 def _xml_filename(invoice_number: str) -> str:

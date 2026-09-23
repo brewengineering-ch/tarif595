@@ -4,6 +4,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from app.models import QrBillRequest, ReimbursementSlipRequest, Tarif595Request, XmlAttachmentRequest
 from app.pdf import (
@@ -22,19 +23,18 @@ app = FastAPI(
 )
 
 INDEX_HTML = Path(__file__).with_name("index.html")
+STATIC_DIRECTORY = Path(__file__).with_name("static")
+app.mount("/static", StaticFiles(directory=STATIC_DIRECTORY), name="static")
 
 
 def pdf_response(content: bytes, filename: str) -> Response:
-    safe_filename = re.sub(r'[^A-Za-z0-9._-]+', "_", filename).strip("._") or "document.pdf"
+    safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._") or "document.pdf"
     encoded_filename = quote(filename, safe="")
     return Response(
         content=content,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": (
-                f'attachment; filename="{safe_filename}"; '
-                f"filename*=UTF-8''{encoded_filename}"
-            )
+            "Content-Disposition": (f"attachment; filename=\"{safe_filename}\"; filename*=UTF-8''{encoded_filename}")
         },
     )
 
