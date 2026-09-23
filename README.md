@@ -1,10 +1,11 @@
 # tarif595
 
-Minimal open source web application to generate the three PDF documents typically needed for Swiss Tarif 595 workflows:
+Minimal open source web application to generate the documents needed for Swiss Tarif 595 workflows:
 
 1. Swiss QR bill PDF
 2. Human-readable Rückforderungsbeleg PDF
-3. Attachment PDF with the XML invoice encoded as a QR code
+3. Machine-readable annex PDF with the schema-valid XML 5.0 invoice compressed, Base64-encoded and split across numbered QR codes
+4. Combined PDF containing all three documents
 
 The application exposes both:
 
@@ -36,6 +37,9 @@ docker run --rm -p 8000:8000 tarif595
 ## API
 
 - `POST /api/qr-bill`
+- `POST /api/tarif595/human-readable`
+- `POST /api/tarif595/machine-readable`
+- `POST /api/tarif595/combined`
 - `POST /api/reimbursement-slip`
 - `POST /api/xml-attachment`
 
@@ -43,7 +47,10 @@ Interactive API documentation is available at `/docs`.
 
 ## Reference documentation
 
-The repository includes the [Swiss Implementation Guidelines for the QR-bill, version 2.3](docs/ig-qr-bill-v2.3-en.pdf), which defines the QR payload and provides the schematic payment-part example used by this application.
+- [QR-bill – Swiss Payment Standards](https://www.six-group.com/en/products-services/banking-services/payment-standardization/standards/qr-bill.html)
+- [Swiss Payment Standards Download Center](https://www.six-group.com/en/products-services/banking-services/payment-standardization/downloads-faq/download-center.html)
+- [Implementation Guidelines for the QR-bill, version 2.3 (PDF)](https://www.six-group.com/dam/download/banking-services/standardization/qr-bill/ig-qr-bill-v2.3-en.pdf)
+- [Forum Datenaustausch: generalInvoiceRequest 5.0 documentation and XSD](https://www.forum-datenaustausch.ch/xml-standards/rechnung)
 
 ## Tests
 
